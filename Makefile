@@ -1,5 +1,7 @@
 .PHONY: train profile scaling eval serve bench infra-init infra-plan infra-up infra-down cost-check
 
+SSH_CIDR ?= 127.0.0.1/32
+
 # --- Slurm jobs (run on the cluster) ---
 
 train:
@@ -32,16 +34,16 @@ infra-init:
 	cd infra && terraform init
 
 infra-plan:
-	cd infra && terraform plan
+	cd infra && terraform plan -var='allowed_ssh_cidrs=["$(SSH_CIDR)"]'
 
 infra-up:
-	cd infra && terraform apply -var="training_enabled=true"
+	cd infra && terraform apply -var="training_enabled=true" -var='allowed_ssh_cidrs=["$(SSH_CIDR)"]'
 
 infra-down:
-	cd infra && terraform apply -var="training_enabled=false"
+	cd infra && terraform apply -var="training_enabled=false" -var='allowed_ssh_cidrs=["$(SSH_CIDR)"]'
 
 infra-multi:
-	cd infra && terraform apply -var="training_enabled=true" -var="multi_node=true"
+	cd infra && terraform apply -var="training_enabled=true" -var="multi_node=true" -var='allowed_ssh_cidrs=["$(SSH_CIDR)"]'
 
 cost-check:
 	bash infra/cost-check.sh

@@ -4,9 +4,15 @@ set -euo pipefail
 LOGFILE="/var/log/ai-factory-setup.log"
 exec > >(tee -a "$LOGFILE") 2>&1
 
+TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+md() {
+  curl -fsS -H "X-aws-ec2-metadata-token: ${TOKEN}" "http://169.254.169.254/latest/meta-data/$1"
+}
+
 echo "=== AI Factory Node Provisioning ==="
-echo "Instance ID: $(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
-echo "Instance Type: $(curl -s http://169.254.169.254/latest/meta-data/instance-type)"
+echo "Instance ID: $(md instance-id)"
+echo "Instance Type: $(md instance-type)"
 echo "Started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # --- Validate GPU hardware before spending time on setup ---
@@ -33,7 +39,7 @@ fi
 
 # --- System packages ---
 apt-get update -qq
-apt-get install -y -qq python3-pip python3-venv git htop jq
+apt-get install -y -qq python3-pip python3-venv git htop jq awscli
 
 # --- CloudWatch agent for log shipping ---
 wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
@@ -78,8 +84,8 @@ source /opt/training-env/bin/activate
 
 pip install --upgrade pip
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install transformers>=4.38.0 datasets>=2.17.0 accelerate>=0.27.0 \
-    sentencepiece>=0.1.99 protobuf>=4.25.0 tensorboard>=2.15.0 vllm>=0.4.0 boto3
+pip install "transformers>=4.38.0" "datasets>=2.17.0" "accelerate>=0.27.0" \
+    "sentencepiece>=0.1.99" "protobuf>=4.25.0" "tensorboard>=2.15.0" "vllm>=0.4.0" "boto3>=1.34.0"
 
 # --- Verify PyTorch sees GPUs ---
 python3 -c "
@@ -96,16 +102,7 @@ print('NCCL: OK')
 # --- Clone repo ---
 git clone https://github.com/pixailabsonline/ai-factory-control-plane.git /root/ai-factory-control-plane || true
 
-# --- Go (for control plane) ---
-if ! command -v go &>/dev/null; then
-    wget -q https://go.dev/dl/go1.24.1.linux-amd64.tar.gz
-    tar -C /usr/local -xzf go1.24.1.linux-amd64.tar.gz
-    rm go1.24.1.linux-amd64.tar.gz
-    echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/go.sh
-fi
-
-export PATH=$PATH:/usr/local/go/bin
-cd /root/ai-factory-control-plane && go build ./...
+# No build step here: this node bootstraps Python training runtime.
 
 # --- NCCL tuning ---
 cat >> /etc/environment <<'EOF'
@@ -117,8 +114,12 @@ EOF
 # --- GPU health beacon (posts GPU util to CloudWatch every 60s) ---
 cat > /usr/local/bin/gpu-health-beacon.sh <<'BEACON'
 #!/bin/bash
-INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
+TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+INSTANCE_ID=$(curl -fsS -H "X-aws-ec2-metadata-token: ${TOKEN}" \
+  http://169.254.169.254/latest/meta-data/instance-id)
+REGION=$(curl -fsS -H "X-aws-ec2-metadata-token: ${TOKEN}" \
+  http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region)
 
 while true; do
     GPU_UTIL=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits | awk '{s+=$1; n++} END {print s/n}')

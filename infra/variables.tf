@@ -13,7 +13,12 @@ variable "key_name" {
 variable "allowed_ssh_cidrs" {
   description = "CIDR blocks allowed to SSH into training instances"
   type        = list(string)
-  default     = ["0.0.0.0/0"] # Override in tfvars with your IP
+  nullable    = false
+
+  validation {
+    condition     = length(var.allowed_ssh_cidrs) > 0
+    error_message = "allowed_ssh_cidrs must be set explicitly (for example: [\"203.0.113.10/32\"])."
+  }
 }
 
 variable "instance_type" {

@@ -19,8 +19,20 @@ Tested on:
 ## Usage
 
 ```bash
+# One-time: create S3 state bucket and DynamoDB lock table
+aws s3 mb s3://ai-factory-tfstate-af-ctrl-x7k2 --region us-east-1
+aws dynamodb create-table \
+  --table-name ai-factory-tf-locks-af-ctrl-x7k2 \
+  --attribute-definitions AttributeName=LockID,AttributeType=S \
+  --key-schema AttributeName=LockID,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region us-east-1
+
 # Provision infrastructure
-make infra-init && make infra-up
+make infra-init
+make infra-plan SSH_CIDR=<your-public-ip>/32   # dry-run
+make infra-up SSH_CIDR=<your-public-ip>/32
+make infra-down SSH_CIDR=<your-public-ip>/32   # spin down instances (keeps S3/state)
 
 # Submit training job via Slurm
 make train                          # single-node, 4x V100
@@ -41,6 +53,8 @@ make eval CHECKPOINT=./checkpoints/<job-id>/checkpoint-5000
 make serve
 make bench
 ```
+
+`allowed_ssh_cidrs` is now required explicitly. The default-open `0.0.0.0/0` posture has been removed.
 
 ## Ops Journal
 

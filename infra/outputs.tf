@@ -30,5 +30,5 @@ output "ssh_command" {
 
 output "estimated_hourly_cost" {
   description = "Estimated hourly cost of running instances"
-  value       = local.instance_count > 0 ? "${local.instance_count} x ${var.instance_type} ≈ $${local.instance_count * 12.24}/hr" : "No instances running"
+  value       = local.instance_count > 0 ? (local.hourly_cost != null ? "${local.instance_count} x ${var.instance_type} ~= $${local.instance_count * local.hourly_cost}/hr" : "${local.instance_count} x ${var.instance_type}; hourly price not in local estimate map") : "No instances running"
 }

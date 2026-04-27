@@ -8,9 +8,11 @@ terraform {
   }
 
   backend "s3" {
-    bucket = "ai-factory-tfstate-af-ctrl-x7k2"
-    key    = "infra/terraform.tfstate"
-    region = "us-east-1"
+    bucket         = "ai-factory-tfstate-af-ctrl-x7k2"
+    key            = "infra/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "ai-factory-tf-locks-af-ctrl-x7k2"
+    encrypt        = true
   }
 }
 
@@ -28,7 +30,7 @@ provider "aws" {
 
 data "aws_caller_identity" "current" {}
 
-# --- Remote state bucket (bootstrap manually once: aws s3 mb s3://ai-factory-tfstate-af-ctrl-x7k2) ---
+# --- Remote state bucket (bootstrap manually — see backend block above) ---
 
 # --- AMI: Deep Learning Base AMI (includes NVIDIA drivers + CUDA) ---
 
@@ -144,7 +146,10 @@ resource "aws_iam_role_policy" "training_cloudwatch" {
           "logs:PutLogEvents",
           "logs:DescribeLogStreams"
         ]
-        Resource = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ai-factory/*"
+        Resource = [
+          "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ai-factory/*",
+          "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ai-factory/*:*"
+        ]
       },
       {
         Effect = "Allow"
@@ -281,6 +286,20 @@ resource "aws_placement_group" "training" {
 
 locals {
   instance_count = var.training_enabled ? (var.multi_node ? 2 : 1) : 0
+  hourly_prices = {
+    "p3.2xlarge"  = 3.06
+    "p3.8xlarge"  = 12.24
+    "p3.16xlarge" = 24.48
+    "p4d.24xlarge" = 32.77
+    "p4de.24xlarge" = 40.96
+    "p5.48xlarge" = 98.32
+    "g5.xlarge"   = 1.006
+    "g5.2xlarge"  = 1.212
+    "g5.12xlarge" = 5.672
+    "g6.xlarge"   = 0.805
+    "g6.12xlarge" = 6.196
+  }
+  hourly_cost = lookup(local.hourly_prices, var.instance_type, null)
 }
 
 resource "aws_instance" "training" {
