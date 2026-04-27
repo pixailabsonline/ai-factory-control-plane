@@ -5,3 +5,5 @@ accelerate>=0.27.0
 sentencepiece>=0.1.99
 protobuf>=4.25.0
 tensorboard>=2.15.0
+vllm>=0.4.0
+boto3>=1.34.0
