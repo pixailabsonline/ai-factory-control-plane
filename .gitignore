@@ -1,0 +1,40 @@
+# Binaries
+/bin/
+*.exe
+
+# Go
+vendor/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Training artifacts
+*.pt
+*.bin
+*.safetensors
+checkpoints/
+runs/
+wandb/
+
+# Profiling
+*.json.gz
+*.trace
+chrome_trace/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Env
+.env
+.env.*
+
+# AWS
+.aws/
