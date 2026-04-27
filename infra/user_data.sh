@@ -79,7 +79,7 @@ source /opt/training-env/bin/activate
 pip install --upgrade pip
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 pip install transformers>=4.38.0 datasets>=2.17.0 accelerate>=0.27.0 \
-    sentencepiece>=0.1.99 protobuf>=4.25.0 tensorboard>=2.15.0 flask boto3
+    sentencepiece>=0.1.99 protobuf>=4.25.0 tensorboard>=2.15.0 vllm>=0.4.0 boto3
 
 # --- Verify PyTorch sees GPUs ---
 python3 -c "
