@@ -4,8 +4,10 @@ Designed for p3.8xlarge (4x V100 16GB) and multi-node p3 clusters.
 """
 
 import os
+import sys
 import time
 import json
+import signal
 import argparse
 from pathlib import Path
 from datetime import datetime
@@ -17,7 +19,6 @@ from torch.distributed.fsdp import (
     MixedPrecision,
     ShardingStrategy,
 )
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import (
     AutoModelForCausalLM,
@@ -25,6 +26,17 @@ from transformers import (
     get_cosine_schedule_with_warmup,
 )
 from datasets import load_dataset
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from checkpoint.async_writer import AsyncCheckpointWriter
+
+
+_SIGTERM_RECEIVED = False
+
+
+def _handle_sigterm(signum, frame):
+    global _SIGTERM_RECEIVED
+    _SIGTERM_RECEIVED = True
 
 
 def setup_distributed():
@@ -92,6 +104,8 @@ def prepare_dataset(tokenizer, dataset_name, max_length=512, split="train"):
 
 
 def train(args):
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     rank, world_size, local_rank = setup_distributed()
 
     model, tokenizer = load_model_and_tokenizer(args.model, rank)
@@ -116,11 +130,19 @@ def train(args):
         num_training_steps=args.max_steps,
     )
 
-    checkpoint_dir = Path(args.checkpoint_dir)
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_writer = AsyncCheckpointWriter(
+        base_dir=args.checkpoint_dir,
+        s3_bucket=args.s3_bucket,
+        s3_prefix=args.s3_prefix,
+        max_kept=args.max_checkpoints,
+    )
+
+    # Restore from latest checkpoint if available
+    global_step = ckpt_writer.restore(model, optimizer, scheduler, local_rank)
+    if rank == 0 and global_step > 0:
+        print(f"Resumed from step {global_step}")
 
     metrics_log = []
-    global_step = 0
     start_time = time.time()
     tokens_processed = 0
 
@@ -133,11 +155,20 @@ def train(args):
         print(f"  Sharding: {args.sharding_strategy}")
         print(f"  Max steps: {args.max_steps}")
         print(f"  Checkpoint every: {args.checkpoint_every} steps")
+        print(f"  Resuming from step: {global_step}")
 
     model.train()
     for epoch in range(args.epochs):
         sampler.set_epoch(epoch)
         for batch_idx, batch in enumerate(dataloader):
+            if _SIGTERM_RECEIVED:
+                if rank == 0:
+                    print(f"SIGTERM — saving checkpoint at step {global_step}")
+                ckpt_writer.save(model, optimizer, scheduler, global_step, rank=rank)
+                ckpt_writer.wait()
+                dist.destroy_process_group()
+                return
+
             input_ids = batch["input_ids"].to(local_rank)
             attention_mask = batch["attention_mask"].to(local_rank)
 
@@ -180,7 +211,11 @@ def train(args):
                         )
 
                 if global_step % args.checkpoint_every == 0:
-                    save_checkpoint(model, optimizer, scheduler, global_step, checkpoint_dir, rank)
+                    ckpt_writer.save(
+                        model, optimizer, scheduler, global_step,
+                        metrics={"loss": loss.item() * args.gradient_accumulation},
+                        rank=rank,
+                    )
 
                 if global_step >= args.max_steps:
                     break
@@ -188,9 +223,12 @@ def train(args):
         if global_step >= args.max_steps:
             break
 
+    # Wait for any pending async checkpoint write
+    ckpt_writer.wait()
+
     if rank == 0:
         elapsed = time.time() - start_time
-        metrics_path = checkpoint_dir / "training_metrics.json"
+        metrics_path = Path(args.checkpoint_dir) / "training_metrics.json"
         with open(metrics_path, "w") as f:
             json.dump({
                 "config": vars(args),
@@ -203,29 +241,12 @@ def train(args):
             }, f, indent=2)
         print(f"\nTraining complete. {global_step} steps, {tokens_processed:,} tokens in {elapsed:.0f}s")
         print(f"Throughput: {tokens_processed / elapsed:.0f} tokens/sec")
-        print(f"Metrics saved to {metrics_path}")
 
-    save_checkpoint(model, optimizer, scheduler, global_step, checkpoint_dir, rank)
+    # Final checkpoint
+    ckpt_writer.save(model, optimizer, scheduler, global_step, rank=rank)
+    ckpt_writer.wait()
+
     dist.destroy_process_group()
-
-
-def save_checkpoint(model, optimizer, scheduler, step, checkpoint_dir, rank):
-    path = checkpoint_dir / f"checkpoint-{step}"
-    path.mkdir(parents=True, exist_ok=True)
-
-    with FSDP.state_dict_type(model, FSDP.StateDictType.FULL_STATE_DICT):
-        if rank == 0:
-            state = {
-                "model": model.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
-                "step": step,
-                "timestamp": datetime.now().isoformat(),
-            }
-            torch.save(state, path / "state.pt")
-            print(f"Checkpoint saved: {path}")
-
-    dist.barrier()
 
 
 def parse_args():
@@ -241,6 +262,9 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--checkpoint-every", type=int, default=500)
     parser.add_argument("--checkpoint-dir", default="./checkpoints")
+    parser.add_argument("--max-checkpoints", type=int, default=5)
+    parser.add_argument("--s3-bucket", default=None)
+    parser.add_argument("--s3-prefix", default=None)
     parser.add_argument("--sharding-strategy", default="FULL_SHARD",
                         choices=["FULL_SHARD", "SHARD_GRAD_OP", "NO_SHARD"])
     return parser.parse_args()
