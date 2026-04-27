@@ -1,13 +1,33 @@
-.PHONY: build test infra-init infra-plan infra-up infra-down cost-check train profile scaling eval serve bench
+.PHONY: train profile scaling eval serve bench infra-init infra-plan infra-up infra-down cost-check
 
-# Go control plane
-build:
-	go build ./...
+# --- Slurm jobs (run on the cluster) ---
 
-test:
-	go test ./...
+train:
+	sbatch slurm/train-single-node.sbatch
 
-# Infrastructure (Terraform)
+train-multi:
+	sbatch slurm/train-multi-node.sbatch
+
+profile:
+	sbatch slurm/profile.sbatch
+
+eval:
+	sbatch slurm/eval.sbatch $(CHECKPOINT)
+
+serve:
+	sbatch slurm/serve.sbatch
+
+scaling:
+	source /opt/training-env/bin/activate && python training/scaling_bench.py \
+		--model mistralai/Mistral-7B-v0.1 \
+		--max-steps 100
+
+bench:
+	source /opt/training-env/bin/activate && python inference/bench.py \
+		--url http://localhost:8080 --requests 50
+
+# --- Infrastructure (Terraform) ---
+
 infra-init:
 	cd infra && terraform init
 
@@ -26,37 +46,13 @@ infra-multi:
 cost-check:
 	bash infra/cost-check.sh
 
-# Training (run on GPU instance)
-train:
-	torchrun --nproc_per_node=4 training/fsdp_trainer.py \
-		--model mistralai/Mistral-7B-v0.1 \
-		--batch-size 2 \
-		--gradient-accumulation 8 \
-		--max-steps 5000 \
-		--checkpoint-every 500
+# --- Cluster status ---
 
-# Profiling (run on GPU instance)
-profile:
-	torchrun --nproc_per_node=4 training/fsdp_trainer.py \
-		--model mistralai/Mistral-7B-v0.1 \
-		--batch-size 2 \
-		--max-steps 50
+jobs:
+	squeue -u $$USER -o "%.8i %.20j %.4t %.10M %.6D %R"
 
-# Scaling benchmark (run on GPU instance)
-scaling:
-	python training/scaling_bench.py \
-		--model mistralai/Mistral-7B-v0.1 \
-		--max-steps 100
+gpu-status:
+	sinfo -p gpu -N -o "%N %G %T %m %e"
 
-# Eval (run on GPU instance)
-eval:
-	python eval/quality_gate.py \
-		--checkpoint ./checkpoints/checkpoint-5000 \
-		--max-perplexity 20.0
-
-# Inference (run on GPU instance)
-serve:
-	python inference/server.py --model mistralai/Mistral-7B-v0.1 --checkpoint ./checkpoints/checkpoint-5000
-
-bench:
-	python inference/bench.py --url http://localhost:8080 --requests 50
+logs:
+	ls -lt logs/ | head -20
