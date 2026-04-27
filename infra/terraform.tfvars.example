@@ -1,0 +1,8 @@
+region            = "us-east-1"
+key_name          = "ai-factory"
+instance_type     = "p3.8xlarge"
+volume_size       = 200
+training_enabled  = false
+multi_node        = false
+allowed_ssh_cidrs = ["YOUR_IP/32"]  # Lock down SSH — run: curl -s ifconfig.me
+alert_sns_arn     = ""               # Optional: SNS topic for GPU idle alerts

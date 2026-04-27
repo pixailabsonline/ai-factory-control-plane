@@ -6,28 +6,44 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  backend "s3" {
+    bucket = "ai-factory-tfstate-af-ctrl-x7k2"
+    key    = "infra/terraform.tfstate"
+    region = "us-east-1"
+  }
 }
 
 provider "aws" {
   region = var.region
+
+  default_tags {
+    tags = {
+      Project     = "ai-factory-control-plane"
+      ManagedBy   = "terraform"
+      Environment = "training"
+    }
+  }
 }
 
 data "aws_caller_identity" "current" {}
 
-# --- AMI: Ubuntu 22.04 with NVIDIA drivers ---
+# --- Remote state bucket (bootstrap manually once: aws s3 mb s3://ai-factory-tfstate-af-ctrl-x7k2) ---
 
-data "aws_ami" "ubuntu_gpu" {
+# --- AMI: Deep Learning Base AMI (includes NVIDIA drivers + CUDA) ---
+
+data "aws_ami" "deep_learning" {
   most_recent = true
-  owners      = ["099720109477"] # Canonical
+  owners      = ["898082745236"] # AWS Deep Learning AMIs
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+    values = ["Deep Learning Base OSS Nvidia Driver AMI (Ubuntu 22.04) *"]
   }
 
   filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
+    name   = "architecture"
+    values = ["x86_64"]
   }
 }
 
@@ -38,15 +54,15 @@ resource "aws_security_group" "training" {
   description = "AI Factory training instances — SSH + inter-node NCCL"
 
   ingress {
-    description = "SSH"
+    description = "SSH — operator only"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.allowed_ssh_cidrs
   }
 
   ingress {
-    description = "NCCL rendezvous"
+    description = "NCCL rendezvous (torchrun)"
     from_port   = 29500
     to_port     = 29500
     protocol    = "tcp"
@@ -54,7 +70,7 @@ resource "aws_security_group" "training" {
   }
 
   ingress {
-    description = "All traffic within training cluster"
+    description = "NCCL data plane — inter-node GPU communication"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -62,18 +78,15 @@ resource "aws_security_group" "training" {
   }
 
   egress {
+    description = "Outbound — pip, apt, S3, HuggingFace model downloads"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  tags = {
-    Project = "ai-factory-control-plane"
-  }
 }
 
-# --- IAM: training instance role ---
+# --- IAM: training instance role (least privilege) ---
 
 resource "aws_iam_role" "training" {
   name = "ai-factory-training"
@@ -90,14 +103,10 @@ resource "aws_iam_role" "training" {
       }
     ]
   })
-
-  tags = {
-    Project = "ai-factory-control-plane"
-  }
 }
 
 resource "aws_iam_role_policy" "training_s3" {
-  name = "ai-factory-s3-checkpoints"
+  name = "s3-checkpoints"
   role = aws_iam_role.training.id
 
   policy = jsonencode({
@@ -120,6 +129,39 @@ resource "aws_iam_role_policy" "training_s3" {
   })
 }
 
+resource "aws_iam_role_policy" "training_cloudwatch" {
+  name = "cloudwatch-logs"
+  role = aws_iam_role.training.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams"
+        ]
+        Resource = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ai-factory/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "AIFactory"
+          }
+        }
+      }
+    ]
+  })
+}
+
 resource "aws_iam_instance_profile" "training" {
   name = "ai-factory-training"
   role = aws_iam_role.training.name
@@ -129,9 +171,13 @@ resource "aws_iam_instance_profile" "training" {
 
 resource "aws_s3_bucket" "checkpoints" {
   bucket = "ai-factory-checkpoints-${data.aws_caller_identity.current.account_id}"
+}
 
-  tags = {
-    Project = "ai-factory-control-plane"
+resource "aws_s3_bucket_versioning" "checkpoints" {
+  bucket = aws_s3_bucket.checkpoints.id
+
+  versioning_configuration {
+    status = "Enabled"
   }
 }
 
@@ -146,10 +192,74 @@ resource "aws_s3_bucket_lifecycle_configuration" "checkpoints" {
       days = 30
     }
 
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+
     filter {
       prefix = "checkpoints/"
     }
   }
+
+  rule {
+    id     = "abort-incomplete-uploads"
+    status = "Enabled"
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+
+    filter {}
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "checkpoints" {
+  bucket = aws_s3_bucket.checkpoints.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "checkpoints" {
+  bucket = aws_s3_bucket.checkpoints.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# --- CloudWatch: log group for training logs ---
+
+resource "aws_cloudwatch_log_group" "training" {
+  name              = "/ai-factory/training"
+  retention_in_days = 14
+}
+
+# --- CloudWatch: GPU utilization alarm ---
+
+resource "aws_cloudwatch_metric_alarm" "gpu_idle" {
+  count = local.instance_count
+
+  alarm_name          = "ai-factory-gpu-idle-${count.index}"
+  alarm_description   = "GPU utilization below 5% for 15 min — wasting credits"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "GPUUtilization"
+  namespace           = "AIFactory"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 5
+  treat_missing_data  = "missing"
+
+  dimensions = {
+    InstanceId = aws_instance.training[count.index].id
+  }
+
+  alarm_actions = var.alert_sns_arn != "" ? [var.alert_sns_arn] : []
 }
 
 # --- SSH Key ---
@@ -157,10 +267,14 @@ resource "aws_s3_bucket_lifecycle_configuration" "checkpoints" {
 resource "aws_key_pair" "training" {
   key_name   = var.key_name
   public_key = file("~/.ssh/${var.key_name}.pub")
+}
 
-  tags = {
-    Project = "ai-factory-control-plane"
-  }
+# --- Placement group for multi-node (co-locate for low-latency NCCL) ---
+
+resource "aws_placement_group" "training" {
+  count    = var.multi_node ? 1 : 0
+  name     = "ai-factory-cluster"
+  strategy = "cluster"
 }
 
 # --- Training instances ---
@@ -172,33 +286,31 @@ locals {
 resource "aws_instance" "training" {
   count = local.instance_count
 
-  ami                    = data.aws_ami.ubuntu_gpu.id
+  ami                    = data.aws_ami.deep_learning.id
   instance_type          = var.instance_type
   key_name               = aws_key_pair.training.key_name
   vpc_security_group_ids = [aws_security_group.training.id]
   iam_instance_profile   = aws_iam_instance_profile.training.name
   user_data              = file("${path.module}/user_data.sh")
+  placement_group        = var.multi_node ? aws_placement_group.training[0].id : null
 
   root_block_device {
     volume_size = var.volume_size
     volume_type = "gp3"
+    throughput  = 250
+    iops        = 3000
+    encrypted   = true
   }
 
-  tags = {
-    Name    = "ai-factory-training-${count.index}"
-    Project = "ai-factory-control-plane"
-    Role    = count.index == 0 ? "master" : "worker"
+  metadata_options {
+    http_tokens = "required" # IMDSv2 only
   }
-}
 
-# --- Placement group for multi-node (low-latency inter-node) ---
-
-resource "aws_placement_group" "training" {
-  count    = var.multi_node ? 1 : 0
-  name     = "ai-factory-cluster"
-  strategy = "cluster"
+  monitoring = true # detailed CloudWatch monitoring
 
   tags = {
-    Project = "ai-factory-control-plane"
+    Name  = "ai-factory-training-${count.index}"
+    Role  = count.index == 0 ? "master" : "worker"
+    Phase = var.multi_node ? "2-multi-node" : "1-single-node"
   }
 }
