@@ -1,4 +1,4 @@
-.PHONY: build test launch terminate cost-check train profile eval serve bench
+.PHONY: build test infra-init infra-plan infra-up infra-down cost-check train profile scaling eval serve bench
 
 # Go control plane
 build:
@@ -7,12 +7,21 @@ build:
 test:
 	go test ./...
 
-# Infrastructure
-launch:
-	bash infra/launch.sh
+# Infrastructure (Terraform)
+infra-init:
+	cd infra && terraform init
 
-terminate:
-	bash infra/terminate.sh
+infra-plan:
+	cd infra && terraform plan
+
+infra-up:
+	cd infra && terraform apply -var="training_enabled=true"
+
+infra-down:
+	cd infra && terraform apply -var="training_enabled=false"
+
+infra-multi:
+	cd infra && terraform apply -var="training_enabled=true" -var="multi_node=true"
 
 cost-check:
 	bash infra/cost-check.sh
