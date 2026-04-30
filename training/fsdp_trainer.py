@@ -245,7 +245,7 @@ def train(args):
             if _SIGTERM_RECEIVED:
                 if rank == 0:
                     print(f"SIGTERM — saving checkpoint at step {global_step}")
-                ckpt_writer.save(model, optimizer, scheduler, global_step, rank=rank)
+                ckpt_writer.save(model, optimizer, scheduler, global_step, rank=rank, model_name=args.model)
                 ckpt_writer.wait()
                 if distributed:
                     dist.destroy_process_group()
@@ -302,12 +302,13 @@ def train(args):
                         model, optimizer, scheduler, global_step,
                         metrics={"loss": loss.item() * args.gradient_accumulation},
                         rank=rank,
+                        model_name=args.model,
                     )
 
                 if args.stop_after_step > 0 and global_step >= args.stop_after_step:
                     if rank == 0:
                         print(f"Stopping after step {global_step} for recovery test")
-                    ckpt_writer.save(model, optimizer, scheduler, global_step, rank=rank)
+                    ckpt_writer.save(model, optimizer, scheduler, global_step, rank=rank, model_name=args.model)
                     ckpt_writer.wait()
                     if distributed:
                         dist.destroy_process_group()
@@ -339,7 +340,7 @@ def train(args):
         print(f"Throughput: {tokens_processed / elapsed:.0f} tokens/sec")
 
     # Final checkpoint
-    ckpt_writer.save(model, optimizer, scheduler, global_step, rank=rank)
+    ckpt_writer.save(model, optimizer, scheduler, global_step, rank=rank, model_name=args.model)
     ckpt_writer.wait()
 
     if distributed:

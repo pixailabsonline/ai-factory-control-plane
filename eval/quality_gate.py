@@ -63,15 +63,20 @@ def evaluate_generation(model, tokenizer, prompts, max_new_tokens=128, device="c
 
 
 def run_quality_gate(checkpoint_path, baseline_perplexity=None, max_perplexity=None,
-                     eval_dataset="wikitext/wikitext-2-raw-v1", device="cuda"):
+                     eval_dataset="wikitext/wikitext-2-raw-v1", device="cuda", model_name=None):
     checkpoint = torch.load(checkpoint_path / "state.pt", map_location=device, weights_only=False)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        "mistralai/Mistral-7B-v0.1", torch_dtype=torch.float16
-    ).to(device)
+    model_name = model_name or checkpoint.get("model_name", "distilgpt2")
+    print(f"Evaluating checkpoint: {checkpoint_path}")
+    print(f"Model: {model_name}, Step: {checkpoint.get('step', 0)}")
+
+    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype).to(device)
     model.load_state_dict(checkpoint["model"])
 
-    tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     dataset = load_dataset(eval_dataset, split="test")
 
@@ -111,6 +116,7 @@ def run_quality_gate(checkpoint_path, baseline_perplexity=None, max_perplexity=N
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--model", default=None, help="Override model name (defaults to value saved in checkpoint)")
     parser.add_argument("--baseline-perplexity", type=float, default=None)
     parser.add_argument("--max-perplexity", type=float, default=None)
     parser.add_argument("--eval-dataset", default="wikitext/wikitext-2-raw-v1")
@@ -122,6 +128,7 @@ def main():
         baseline_perplexity=args.baseline_perplexity,
         max_perplexity=args.max_perplexity,
         eval_dataset=args.eval_dataset,
+        model_name=args.model,
     )
 
     with open(args.output, "w") as f:

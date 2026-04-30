@@ -31,7 +31,7 @@ class AsyncCheckpointWriter:
         self._last_error = None
         self._thread_lock = threading.Lock()
 
-    def save(self, model, optimizer, scheduler, step, metrics=None, rank=0):
+    def save(self, model, optimizer, scheduler, step, metrics=None, rank=0, model_name=None):
         is_fsdp = isinstance(model, FSDP)
         if is_fsdp:
             state_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
@@ -51,6 +51,7 @@ class AsyncCheckpointWriter:
             "timestamp": datetime.now().isoformat(),
             "metrics": metrics or {},
             "fsdp": is_fsdp,
+            "model_name": model_name,
         }
 
         if rank != 0:
