@@ -52,7 +52,7 @@ source /opt/pytorch/bin/activate
 
 echo "Node $(hostname) rank=$SLURM_PROCID — GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
 
-torchrun \
+    torchrun \
     --nproc_per_node=1 \
     --nnodes=2 \
     --node_rank=$SLURM_PROCID \
@@ -63,7 +63,8 @@ torchrun \
     --dataset "'"${DATASET:-wikitext/wikitext-2-raw-v1}"'" \
     --batch-size "'"${BATCH_SIZE:-2}"'" \
     --gradient-accumulation "'"${GRAD_ACCUM:-4}"'" \
-    --lr "'"${LR:-2e-5}"'" \
+    --lr "'"${LR:-1e-5}"'" \
+    --warmup-steps "'"${WARMUP_STEPS:-20}"'" \
     --max-steps "'"${MAX_STEPS:-5000}"'" \
     --checkpoint-every "'"${CKPT_EVERY:-500}"'" \
     --checkpoint-dir "'"$CHECKPOINT_DIR"'" \

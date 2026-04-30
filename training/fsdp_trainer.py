@@ -42,6 +42,12 @@ def _handle_sigterm(signum, frame):
     _SIGTERM_RECEIVED = True
 
 
+def _compute_mixed_precision_dtype():
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        return torch.bfloat16
+    return torch.float16
+
+
 def setup_distributed():
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     rank = int(os.environ.get("RANK", "0"))
@@ -66,11 +72,12 @@ def get_fsdp_config(sharding_strategy="FULL_SHARD"):
         "NO_SHARD": ShardingStrategy.NO_SHARD,
     }
 
+    mixed_precision_dtype = _compute_mixed_precision_dtype()
     if torch.cuda.is_available():
         mp_policy = MixedPrecision(
-            param_dtype=torch.float16,
-            reduce_dtype=torch.float16,
-            buffer_dtype=torch.float16,
+            param_dtype=mixed_precision_dtype,
+            reduce_dtype=mixed_precision_dtype,
+            buffer_dtype=mixed_precision_dtype,
         )
     else:
         mp_policy = None
@@ -127,9 +134,10 @@ def load_model_and_tokenizer(model_name, rank, smoke_test=False, max_length=32):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    dtype = _compute_mixed_precision_dtype() if torch.cuda.is_available() else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.float16,
+        torch_dtype=dtype,
         use_cache=False,
     )
 
@@ -247,6 +255,11 @@ def train(args):
 
             outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
             loss = outputs.loss / args.gradient_accumulation
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    f"Non-finite loss detected at step {global_step + 1} on rank {rank}. "
+                    "Try lowering LR, increasing warmup, or switching to a smaller model."
+                )
             loss.backward()
 
             tokens_in_batch = int(attention_mask.sum().item()) * world_size
