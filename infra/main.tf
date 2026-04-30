@@ -30,7 +30,7 @@ provider "aws" {
 
 data "aws_caller_identity" "current" {}
 
-# --- Remote state bucket (bootstrap manually — see backend block above) ---
+# --- Remote state bucket (bootstrap manually - see backend block above) ---
 
 # --- AMI: Deep Learning Base AMI (includes NVIDIA drivers + CUDA) ---
 
@@ -40,7 +40,7 @@ data "aws_ami" "deep_learning" {
 
   filter {
     name   = "name"
-    values = ["Deep Learning Base OSS Nvidia Driver AMI (Ubuntu 22.04) *"]
+    values = ["Deep Learning OSS Nvidia Driver AMI GPU PyTorch 2.7 (Ubuntu 22.04) *"]
   }
 
   filter {
@@ -53,10 +53,10 @@ data "aws_ami" "deep_learning" {
 
 resource "aws_security_group" "training" {
   name        = "ai-factory-training"
-  description = "AI Factory training instances — SSH + inter-node NCCL"
+  description = "AI Factory training instances - SSH + inter-node NCCL"
 
   ingress {
-    description = "SSH — operator only"
+    description = "SSH - operator only"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -72,7 +72,7 @@ resource "aws_security_group" "training" {
   }
 
   ingress {
-    description = "NCCL data plane — inter-node GPU communication"
+    description = "NCCL data plane - inter-node GPU communication"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -80,7 +80,7 @@ resource "aws_security_group" "training" {
   }
 
   egress {
-    description = "Outbound — pip, apt, S3, HuggingFace model downloads"
+    description = "Outbound - pip, apt, S3, HuggingFace model downloads"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -250,7 +250,7 @@ resource "aws_cloudwatch_metric_alarm" "gpu_idle" {
   count = local.instance_count
 
   alarm_name          = "ai-factory-gpu-idle-${count.index}"
-  alarm_description   = "GPU utilization below 5% for 15 min — wasting credits"
+  alarm_description   = "GPU utilization below 5% for 15 min - wasting credits"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 3
   metric_name         = "GPUUtilization"
@@ -274,6 +274,27 @@ resource "aws_key_pair" "training" {
   public_key = file("~/.ssh/${var.key_name}.pub")
 }
 
+# --- Subnet: pick an AZ where the GPU instance type is available ---
+
+data "aws_ec2_instance_type_offerings" "gpu" {
+  filter {
+    name   = "instance-type"
+    values = [var.instance_type]
+  }
+  location_type = "availability-zone"
+}
+
+data "aws_subnets" "gpu_capable" {
+  filter {
+    name   = "default-for-az"
+    values = ["true"]
+  }
+  filter {
+    name   = "availability-zone"
+    values = [data.aws_ec2_instance_type_offerings.gpu.locations[0]]
+  }
+}
+
 # --- Placement group for multi-node (co-locate for low-latency NCCL) ---
 
 resource "aws_placement_group" "training" {
@@ -287,17 +308,18 @@ resource "aws_placement_group" "training" {
 locals {
   instance_count = var.training_enabled ? (var.multi_node ? 2 : 1) : 0
   hourly_prices = {
-    "p3.2xlarge"  = 3.06
-    "p3.8xlarge"  = 12.24
-    "p3.16xlarge" = 24.48
-    "p4d.24xlarge" = 32.77
+    "p3.2xlarge"    = 3.06
+    "p3.8xlarge"    = 12.24
+    "p3.16xlarge"   = 24.48
+    "p4d.24xlarge"  = 32.77
     "p4de.24xlarge" = 40.96
-    "p5.48xlarge" = 98.32
-    "g5.xlarge"   = 1.006
-    "g5.2xlarge"  = 1.212
-    "g5.12xlarge" = 5.672
-    "g6.xlarge"   = 0.805
-    "g6.12xlarge" = 6.196
+    "p5.48xlarge"   = 98.32
+    "g5.xlarge"     = 1.006
+    "g5.2xlarge"    = 1.212
+    "g5.12xlarge"   = 5.672
+    "g4dn.xlarge"   = 0.526
+    "g6.xlarge"     = 0.805
+    "g6.12xlarge"   = 6.196
   }
   hourly_cost = lookup(local.hourly_prices, var.instance_type, null)
 }
@@ -308,6 +330,7 @@ resource "aws_instance" "training" {
   ami                    = data.aws_ami.deep_learning.id
   instance_type          = var.instance_type
   key_name               = aws_key_pair.training.key_name
+  subnet_id              = data.aws_subnets.gpu_capable.ids[0]
   vpc_security_group_ids = [aws_security_group.training.id]
   iam_instance_profile   = aws_iam_instance_profile.training.name
   user_data              = file("${path.module}/user_data.sh")
@@ -316,16 +339,15 @@ resource "aws_instance" "training" {
   root_block_device {
     volume_size = var.volume_size
     volume_type = "gp3"
-    throughput  = 250
-    iops        = 3000
-    encrypted   = true
   }
 
   metadata_options {
-    http_tokens = "required" # IMDSv2 only
+    http_tokens            = "required" # IMDSv2 only
+    instance_metadata_tags = "enabled"  # allows user_data to read Role tag
   }
 
-  monitoring = true # detailed CloudWatch monitoring
+  ebs_optimized = true
+  monitoring    = true
 
   tags = {
     Name  = "ai-factory-training-${count.index}"

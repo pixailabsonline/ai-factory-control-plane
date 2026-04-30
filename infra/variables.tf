@@ -24,7 +24,7 @@ variable "allowed_ssh_cidrs" {
 variable "instance_type" {
   description = "GPU instance type for training"
   type        = string
-  default     = "p3.8xlarge"
+  default     = "g5.xlarge"
 }
 
 variable "volume_size" {
