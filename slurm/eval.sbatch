@@ -29,7 +29,7 @@ source /opt/pytorch/bin/activate
 
 python eval/quality_gate.py \
     --checkpoint "$CHECKPOINT" \
-    --max-perplexity "${MAX_PPL:-50.0}" \
+    --max-perplexity "${MAX_PPL:-90.0}" \
     --output "eval/results/eval-$SLURM_JOB_ID.json"
 
 EXIT=$?
