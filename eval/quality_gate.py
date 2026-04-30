@@ -62,17 +62,36 @@ def evaluate_generation(model, tokenizer, prompts, max_new_tokens=128, device="c
     return results
 
 
+def _load_meta(checkpoint_path):
+    """Return (meta_dict, is_sharded). Handles both full and sharded checkpoint formats."""
+    train_state_path = checkpoint_path / "train_state.pt"
+    if train_state_path.exists():
+        return torch.load(train_state_path, map_location="cpu", weights_only=False), True
+    return torch.load(checkpoint_path / "state.pt", map_location="cpu", weights_only=False), False
+
+
 def run_quality_gate(checkpoint_path, baseline_perplexity=None, max_perplexity=None,
                      eval_dataset="wikitext/wikitext-2-raw-v1", device="cuda", model_name=None):
-    checkpoint = torch.load(checkpoint_path / "state.pt", map_location=device, weights_only=False)
+    meta, is_sharded = _load_meta(checkpoint_path)
 
-    model_name = model_name or checkpoint.get("model_name", "distilgpt2")
-    print(f"Evaluating checkpoint: {checkpoint_path}")
-    print(f"Model: {model_name}, Step: {checkpoint.get('step', 0)}")
+    model_name = model_name or meta.get("model_name", "distilgpt2")
+    step = meta.get("step", 0)
+    print(f"Evaluating checkpoint: {checkpoint_path} (sharded={is_sharded})")
+    print(f"Model: {model_name}, Step: {step}")
 
     dtype = torch.float16 if torch.cuda.is_available() else torch.float32
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype).to(device)
-    model.load_state_dict(checkpoint["model"])
+
+    if is_sharded:
+        import torch.distributed.checkpoint as dist_cp
+        model_sd = {k: v.to("cpu") for k, v in model.state_dict().items()}
+        dist_cp.load(
+            {"model": model_sd},
+            storage_reader=dist_cp.FileSystemReader(str(checkpoint_path / "model")),
+        )
+        model.load_state_dict({k: v.to(device) for k, v in model_sd.items()})
+    else:
+        model.load_state_dict(meta["model"])
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if tokenizer.pad_token is None:
@@ -104,7 +123,7 @@ def run_quality_gate(checkpoint_path, baseline_perplexity=None, max_perplexity=N
     result = {
         "timestamp": datetime.now().isoformat(),
         "checkpoint": str(checkpoint_path),
-        "step": checkpoint.get("step", 0),
+        "step": step,
         "passed": passed,
         "reasons": reasons,
         "perplexity": perplexity_result,
