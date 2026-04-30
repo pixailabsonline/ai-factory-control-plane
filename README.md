@@ -10,7 +10,7 @@ End-to-end GPU training infrastructure: Kubernetes substrate, NVIDIA GPU enablem
 - **PyTorch FSDP** - distributed training with full sharding, mixed precision
 - **vLLM** - production inference with continuous batching and PagedAttention
 - **Terraform** - instance provisioning, IAM, S3, CloudWatch, auto-provisioned with Deep Learning AMI
-- **CloudWatch** - log shipping, GPU utilization metrics, idle alerts
+- **CloudWatch** - infrastructure-level log shipping, GPU utilization metrics, idle alerts
 
 ## Architecture Direction
 
@@ -20,6 +20,8 @@ This is not a CoreWeave/SUNK-style unified scheduler. The default design does no
 
 See [docs/nvidia-style-slurm-on-kubernetes.md](docs/nvidia-style-slurm-on-kubernetes.md) for the architecture contract.
 See [decisions/kubernetes-substrate-vs-unified-scheduler.md](decisions/kubernetes-substrate-vs-unified-scheduler.md) for the scope decision and revisit criteria.
+See [docs/project-overview.md](docs/project-overview.md) for the single-page map of the repo.
+Read [docs/project-overview.md](docs/project-overview.md) first if you want the diagram and the end-to-end flow in one place.
 
 ## Hardware
 
@@ -49,7 +51,7 @@ make infra-down SSH_CIDR=<your-public-ip>/32   # spin down instances (keeps S3/s
 make train-smoke                   # 1 GPU smoke test for the training loop
 make train-recovery                # checkpoint write + resume test
 make train                          # single-node training on the current GPU node
-make train-multi                    # 2-node training on current GPU nodes, default gpt2-xl
+make train-multi                    # 2-node training on current GPU nodes, default gpt2-medium
 
 # Monitor
 make jobs                           # squeue
@@ -91,6 +93,10 @@ Use [docs/model-artifact-manifest.md](docs/model-artifact-manifest.md) to record
 Current cluster shape used for the proven training runs:
 - **Single-node:** 1x A10G class GPU node
 - **Multi-node:** 2x A10G class GPU nodes with FSDP FULL_SHARD
+
+CloudWatch and vLLM are real repo components, but they live in the platform/inference layers:
+- CloudWatch is implemented in `infra/`.
+- vLLM is launched by `inference/server.py` and depends on `training/requirements.txt`.
 
 ## Ops Journal
 
