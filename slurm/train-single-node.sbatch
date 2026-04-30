@@ -37,12 +37,12 @@ mkdir -p "$CHECKPOINT_DIR"
 
 trap 'echo "SIGTERM received, saving checkpoint..."; kill -TERM $TRAIN_PID 2>/dev/null; wait $TRAIN_PID; exit 0' SIGTERM
 
-# Use a smaller default model on the current single-GPU node; override MODEL for larger hardware.
+# DistilGPT2 is the default single-node model because it fits the current 1-GPU node reliably.
 torchrun \
     --nproc_per_node=1 \
     --nnodes=1 \
     training/fsdp_trainer.py \
-    --model "${MODEL:-gpt2-xl}" \
+    --model "${MODEL:-distilgpt2}" \
     --dataset "${DATASET:-wikitext/wikitext-2-raw-v1}" \
     --batch-size "${BATCH_SIZE:-2}" \
     --gradient-accumulation "${GRAD_ACCUM:-8}" \
