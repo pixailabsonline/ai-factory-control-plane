@@ -47,6 +47,7 @@ make infra-down SSH_CIDR=<your-public-ip>/32   # spin down instances (keeps S3/s
 
 # Submit training job via Slurm
 make train-smoke                   # 1 GPU smoke test for the training loop
+make train-recovery                # checkpoint write + resume test
 make train                          # single-node training on the current GPU node
 make train-multi                    # 2-node training on current GPU nodes, default gpt2-xl
 

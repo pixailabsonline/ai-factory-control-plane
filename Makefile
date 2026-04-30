@@ -1,4 +1,4 @@
-.PHONY: train train-smoke profile scaling eval serve bench infra-init infra-plan infra-up infra-down cost-check jobs gpu-status substrate-status slurm-status platform-status logs
+.PHONY: train train-smoke train-recovery profile scaling eval serve bench infra-init infra-plan infra-up infra-down cost-check jobs gpu-status substrate-status slurm-status platform-status logs
 
 SSH_CIDR ?= 127.0.0.1/32
 
@@ -9,6 +9,9 @@ train:
 
 train-smoke:
 	sbatch slurm/train-smoke.sbatch
+
+train-recovery:
+	sbatch slurm/train-recovery.sbatch
 
 train-multi:
 	sbatch --export=ALL,MAX_STEPS=$(MAX_STEPS),CKPT_EVERY=$(CKPT_EVERY) slurm/train-multi-node.sbatch

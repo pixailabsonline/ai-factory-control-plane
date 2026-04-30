@@ -39,6 +39,7 @@ Run these from the provisioned master node:
 
 ```bash
 make train-smoke
+make train-recovery
 make substrate-status
 make slurm-status
 make platform-status
@@ -69,6 +70,7 @@ Stage 3 is accepted when all of the following are true:
 - GPU substrate nodes carry the `ai-factory/gpu-owner=slurm-batch:NoSchedule` taint after GPU Operator installation.
 - GPU Operator pods are healthy in the `gpu-operator` namespace.
 - `make train-smoke` completes a short model-training run and writes checkpoints.
+- `make train-recovery` simulates interruption, restores from checkpoint, and continues.
 - `sinfo -Nel` shows all expected Slurm nodes.
 - `scontrol show partition gpu` and `scontrol show partition slurm-batch` both resolve.
 - A researcher can submit with `sbatch` without knowing or using Kubernetes.

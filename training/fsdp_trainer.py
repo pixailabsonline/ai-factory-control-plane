@@ -304,6 +304,15 @@ def train(args):
                         rank=rank,
                     )
 
+                if args.stop_after_step > 0 and global_step >= args.stop_after_step:
+                    if rank == 0:
+                        print(f"Stopping after step {global_step} for recovery test")
+                    ckpt_writer.save(model, optimizer, scheduler, global_step, rank=rank)
+                    ckpt_writer.wait()
+                    if distributed:
+                        dist.destroy_process_group()
+                    return
+
                 if global_step >= args.max_steps:
                     break
 
@@ -357,6 +366,8 @@ def parse_args():
                         choices=["FULL_SHARD", "SHARD_GRAD_OP", "NO_SHARD"])
     parser.add_argument("--smoke-test", action="store_true",
                         help="Use a tiny synthetic dataset and a tiny local model for a fast local validation run.")
+    parser.add_argument("--stop-after-step", type=int, default=0,
+                        help="Save a checkpoint and exit after this global step. Used to simulate interruption and resume tests.")
     return parser.parse_args()
 
 

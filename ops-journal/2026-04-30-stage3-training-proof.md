@@ -18,3 +18,4 @@ Lesson:
 - Distributed training works end to end through Slurm, `torchrun`, FSDP, and checkpointing.
 - Plain Ethernet on g5-class nodes is a real bottleneck for multi-node all-reduce.
 - The current defaults should stay conservative on single-node hardware and only use larger models when the cluster shape supports them.
+- Recovery is now tested directly with a stop-after-step run followed by a resume from the same checkpoint directory.
