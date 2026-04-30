@@ -1,4 +1,9 @@
-.PHONY: train train-smoke train-recovery profile scaling eval serve bench infra-init infra-plan infra-up infra-down cost-check jobs gpu-status substrate-status slurm-status platform-status logs
+.PHONY: train train-smoke train-recovery profile scaling eval export-model publish-model serve bench infra-init infra-plan infra-up infra-down cost-check jobs gpu-status substrate-status slurm-status platform-status logs
+
+S3_BUCKET ?= ai-factory-checkpoints-737213639346
+MODEL_NAME ?= gpt2-medium
+S3_RUN_KEY ?= runs/$(MODEL_NAME)
+S3_RUN_ROOT ?= s3://$(S3_BUCKET)/$(S3_RUN_KEY)
 
 SSH_CIDR ?= 127.0.0.1/32
 
@@ -20,10 +25,33 @@ profile:
 	sbatch slurm/profile.sbatch
 
 eval:
-	sbatch slurm/eval.sbatch $(CHECKPOINT)
+	sbatch --export=ALL,S3_BUCKET=$(S3_BUCKET),MODEL_NAME=$(MODEL_NAME),S3_RUN_KEY=$(S3_RUN_KEY),S3_RUN_ROOT=$(S3_RUN_ROOT) slurm/eval.sbatch
+
+export-model:
+	@test -n "$(CHECKPOINT)" || (echo "CHECKPOINT is required" && exit 1)
+	@test -n "$(MODEL_DIR)" || (echo "MODEL_DIR is required" && exit 1)
+	source /opt/training-env/bin/activate && python training/export_model.py \
+		--checkpoint "$(CHECKPOINT)" \
+		--output-dir "$(MODEL_DIR)" \
+		$(if $(MODEL),--model "$(MODEL)",) \
+		$(if $(TOKENIZER),--tokenizer "$(TOKENIZER)",)
+
+publish-model:
+	@test -n "$(CHECKPOINT)" || (echo "CHECKPOINT is required" && exit 1)
+	@test -n "$(MODEL_DIR)" || (echo "MODEL_DIR is required" && exit 1)
+	@test -n "$(MODEL_S3_URI)$(MODEL_S3_ROOT)" || (echo "MODEL_S3_URI or MODEL_S3_ROOT is required" && exit 1)
+	@if [ -n "$(MODEL_S3_URI)" ]; then S3_FLAG="--s3-uri $(MODEL_S3_URI)"; else S3_FLAG="--s3-root $(MODEL_S3_ROOT)"; fi; \
+	source /opt/training-env/bin/activate && python training/publish_model.py \
+		--checkpoint "$(CHECKPOINT)" \
+		--output-dir "$(MODEL_DIR)" \
+		$$S3_FLAG \
+		$(if $(MODEL),--model "$(MODEL)",) \
+		$(if $(TOKENIZER),--tokenizer "$(TOKENIZER)",)
 
 serve:
-	sbatch slurm/serve.sbatch
+	@opts="--export=ALL,MODEL=$(MODEL),MODEL_DIR=$(MODEL_DIR),MODEL_S3_URI=$(MODEL_S3_URI),MODEL_S3_ROOT=$(MODEL_S3_ROOT),CHECKPOINT=$(CHECKPOINT),TOKENIZER=$(TOKENIZER),EXPORT_DIR=$(EXPORT_DIR),PORT=$(PORT),TP=$(TP)"; \
+	if [ -n "$(NODELIST)" ]; then opts="$$opts --nodelist=$(NODELIST)"; fi; \
+	sbatch $$opts slurm/serve.sbatch
 
 scaling:
 	source /opt/training-env/bin/activate && python training/scaling_bench.py \

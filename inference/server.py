@@ -9,13 +9,17 @@ Inference server using vLLM — production-grade model serving with:
 import argparse
 import subprocess
 import sys
+from pathlib import Path
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="mistralai/Mistral-7B-v0.1")
+    parser.add_argument("--model", default="mistralai/Mistral-7B-v0.1",
+                        help="Base model name or Hugging Face repo ID")
+    parser.add_argument("--model-dir", default=None,
+                        help="Path to an exported, serveable model directory")
     parser.add_argument("--checkpoint", default=None,
-                        help="Path to fine-tuned checkpoint (merged weights)")
+                        help="Deprecated alias for --model-dir")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--tensor-parallel", type=int, default=1,
@@ -24,7 +28,16 @@ def main():
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.90)
     args = parser.parse_args()
 
-    model_path = args.checkpoint if args.checkpoint else args.model
+    model_path = args.model_dir or args.checkpoint or args.model
+    model_source = "exported model directory" if args.model_dir or args.checkpoint else "base model"
+
+    model_path_obj = Path(model_path)
+    if model_path_obj.exists() and model_path_obj.is_dir():
+        if (model_path_obj / "state.pt").exists() and not (model_path_obj / "config.json").exists():
+            raise SystemExit(
+                f"{model_path} looks like a raw training checkpoint, not a serveable model directory. "
+                "Export it first with training/export_model.py, then point --model-dir at the exported artifact."
+            )
 
     cmd = [
         sys.executable, "-m", "vllm.entrypoints.openai.api_server",
@@ -39,6 +52,7 @@ def main():
 
     print(f"Starting vLLM server:")
     print(f"  Model: {model_path}")
+    print(f"  Source: {model_source}")
     print(f"  Tensor parallel: {args.tensor_parallel} GPU(s)")
     print(f"  Max context: {args.max_model_len} tokens")
     print(f"  Endpoint: http://{args.host}:{args.port}/v1/completions")

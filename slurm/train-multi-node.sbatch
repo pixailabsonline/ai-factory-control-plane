@@ -17,6 +17,8 @@ set -euo pipefail
 
 S3_BUCKET="${S3_BUCKET:-ai-factory-checkpoints-737213639346}"
 MODEL_NAME="${MODEL:-gpt2-medium}"
+S3_RUN_KEY="${S3_RUN_KEY:-runs/$MODEL_NAME}"
+S3_RUN_ROOT="${S3_RUN_ROOT:-s3://$S3_BUCKET/$S3_RUN_KEY}"
 
 # Persistent across reboots, shared across all jobs for this model
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-$HOME/checkpoints/$MODEL_NAME}"
@@ -24,7 +26,7 @@ CHECKPOINT_DIR="${CHECKPOINT_DIR:-$HOME/checkpoints/$MODEL_NAME}"
 echo "=== Multi-node job $SLURM_JOB_ID ==="
 echo "Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "Nodes: $SLURM_NODELIST ($SLURM_NNODES x 1 GPU = 2 GPUs total)"
-echo "Checkpoints: $CHECKPOINT_DIR (S3: s3://$S3_BUCKET/checkpoints/$MODEL_NAME)"
+echo "Checkpoints: $CHECKPOINT_DIR (S3: $S3_RUN_ROOT/checkpoints)"
 
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n1)
 MASTER_PORT=29500
@@ -74,7 +76,7 @@ torchrun \
     --checkpoint-every "'"${CKPT_EVERY:-500}"'" \
     --checkpoint-dir   "'"$CHECKPOINT_DIR"'" \
     --s3-bucket    "'"$S3_BUCKET"'" \
-    --s3-prefix    "checkpoints/'"$MODEL_NAME"'" \
+    --s3-prefix    "$S3_RUN_KEY/checkpoints" \
     --sharding-strategy "'"${SHARD_STRATEGY:-FULL_SHARD}"'" \
     2>&1 | tee "logs/training-$SLURM_JOB_ID-node$SLURM_PROCID.log"
 '
@@ -85,6 +87,6 @@ echo "=== Training complete: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 REPO_DIR="$HOME/ai-factory-control-plane"
 EVAL_JOB=$(sbatch --parsable \
     --nodelist="$MASTER_ADDR" \
-    --export=ALL,S3_BUCKET="$S3_BUCKET",MODEL_NAME="$MODEL_NAME",MAX_PPL="${MAX_PPL:-90.0}" \
+    --export=ALL,S3_BUCKET="$S3_BUCKET",MODEL_NAME="$MODEL_NAME",S3_RUN_ROOT="$S3_RUN_ROOT",MAX_PPL="${MAX_PPL:-90.0}" \
     "$REPO_DIR/slurm/eval.sbatch")
 echo "Submitted eval job $EVAL_JOB"

@@ -48,4 +48,5 @@ notes: Trained on 2x A10G with FSDP FULL_SHARD.
 - For every training run you want to cite as evidence, create one manifest alongside the ops journal entry.
 - Keep the manifest human-readable.
 - Keep the raw model artifact in S3 or another artifact store.
+- Prefer a run root like `s3://<bucket>/runs/<run-name>/` with checkpoints under `checkpoints/` and promoted models under `models/latest`.
 - Reference the manifest from the journal entry.

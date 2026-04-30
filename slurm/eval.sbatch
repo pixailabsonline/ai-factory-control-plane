@@ -14,9 +14,11 @@ set -euo pipefail
 
 S3_BUCKET="${S3_BUCKET:-ai-factory-checkpoints-737213639346}"
 MODEL_NAME="${MODEL_NAME:-gpt2-medium}"
-S3_PREFIX="checkpoints/$MODEL_NAME"
+S3_RUN_KEY="${S3_RUN_KEY:-runs/$MODEL_NAME}"
+S3_RUN_ROOT="${S3_RUN_ROOT:-s3://$S3_BUCKET/$S3_RUN_KEY}"
+S3_CHECKPOINTS_URI="$S3_RUN_ROOT/checkpoints"
 
-echo "=== Eval gate: s3://$S3_BUCKET/$S3_PREFIX ==="
+echo "=== Eval gate: $S3_CHECKPOINTS_URI ==="
 
 REPO_DIR="$HOME/ai-factory-control-plane"
 if [ ! -d "$REPO_DIR" ]; then
@@ -30,7 +32,7 @@ mkdir -p eval/results
 source /opt/pytorch/bin/activate
 
 # Find the latest checkpoint-N in S3 and download it
-LATEST_STEP=$(aws s3 ls "s3://$S3_BUCKET/$S3_PREFIX/" \
+LATEST_STEP=$(aws s3 ls "$S3_CHECKPOINTS_URI/" \
     | awk '{print $2}' \
     | grep 'checkpoint-' \
     | sed 's|checkpoint-||;s|/||' \
@@ -38,14 +40,14 @@ LATEST_STEP=$(aws s3 ls "s3://$S3_BUCKET/$S3_PREFIX/" \
     | tail -1)
 
 if [ -z "$LATEST_STEP" ]; then
-    echo "No checkpoints found at s3://$S3_BUCKET/$S3_PREFIX/ — aborting"
+    echo "No checkpoints found at $S3_CHECKPOINTS_URI/ — aborting"
     exit 1
 fi
 
 echo "Latest checkpoint: step $LATEST_STEP"
 LOCAL_CKPT="/tmp/eval-ckpt-$SLURM_JOB_ID/checkpoint-$LATEST_STEP"
 mkdir -p "$LOCAL_CKPT"
-aws s3 sync "s3://$S3_BUCKET/$S3_PREFIX/checkpoint-$LATEST_STEP/" "$LOCAL_CKPT/"
+aws s3 sync "$S3_CHECKPOINTS_URI/checkpoint-$LATEST_STEP/" "$LOCAL_CKPT/"
 
 python eval/quality_gate.py \
     --checkpoint "$LOCAL_CKPT" \

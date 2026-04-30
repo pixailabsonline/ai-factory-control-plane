@@ -1,6 +1,6 @@
 # AI Factory Control Plane
 
-End-to-end GPU training infrastructure: Kubernetes substrate, NVIDIA GPU enablement, Slurm researcher ergonomics, FSDP fine-tuning, checkpoint recovery, evaluation gates, and vLLM inference serving.
+End-to-end GPU training infrastructure: Kubernetes substrate, NVIDIA GPU enablement, Slurm researcher ergonomics, FSDP fine-tuning, checkpoint recovery, evaluation gates, model export/promotion, and vLLM inference serving.
 
 ## Stack
 
@@ -62,11 +62,18 @@ make logs                           # recent log files
 # Profile a short run
 make profile
 
-# Evaluate checkpoint
-make eval CHECKPOINT=./checkpoints/<job-id>/checkpoint-5000
+# Evaluate the latest checkpoint in the run root
+make eval MODEL_NAME=<model-name>
+
+# Export a trained checkpoint into a serveable model directory
+make export-model CHECKPOINT=/tmp/checkpoints/<job-id>/checkpoint-1000 MODEL_DIR=/tmp/models/<run-name>
+
+# Promote the exported model to S3
+make publish-model CHECKPOINT=/tmp/checkpoints/<job-id>/checkpoint-1000 MODEL_DIR=/tmp/models/<run-name> MODEL_S3_ROOT=s3://<bucket>/runs/<run-name>
 
 # Serve trained model
-make serve
+make serve MODEL_DIR=/tmp/models/<run-name>
+make serve MODEL_S3_ROOT=s3://<bucket>/runs/<run-name>
 make bench
 ```
 
@@ -78,6 +85,12 @@ Stage 3 is now proven end to end on the current cluster shape:
 - checkpoint recovery passes
 
 Use [docs/model-artifact-manifest.md](docs/model-artifact-manifest.md) to record trained checkpoints or exported model artifacts without checking binaries into git.
+
+`make serve` serves a base model unless you point it at an exported model directory or a promoted S3 artifact. Raw training checkpoints are for training and eval; export them first with `make export-model` or promote them with `make publish-model`. Each promoted artifact directory now includes `README.md` and `artifact_index.json` so the S3 prefix is browsable as evidence. The standardized S3 shape is `s3://<bucket>/runs/<run-name>/checkpoints/` for raw checkpoints and `s3://<bucket>/runs/<run-name>/models/latest` for the promoted artifact. If the checkpoint is node-local, pin the export/publish/serve job to that node with `NODELIST=...`.
+
+Current cluster shape used for the proven training runs:
+- **Single-node:** 1x A10G class GPU node
+- **Multi-node:** 2x A10G class GPU nodes with FSDP FULL_SHARD
 
 ## Ops Journal
 
