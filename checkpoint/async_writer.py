@@ -32,32 +32,39 @@ class AsyncCheckpointWriter:
         self._thread_lock = threading.Lock()
 
     def save(self, model, optimizer, scheduler, step, metrics=None, rank=0):
-        state_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-        optim_config = FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=True)
-        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, state_config, optim_config):
+        is_fsdp = isinstance(model, FSDP)
+        if is_fsdp:
+            state_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+            optim_config = FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=True)
+            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, state_config, optim_config):
+                model_state = model.state_dict()
+                optimizer_state = FSDP.optim_state_dict(model, optimizer)
+        else:
             model_state = model.state_dict()
-            optimizer_state = FSDP.optim_state_dict(model, optimizer)
-            state = {
-                "model": model_state,
-                "optimizer": optimizer_state,
-                "scheduler": scheduler.state_dict(),
-                "step": step,
-                "timestamp": datetime.now().isoformat(),
-                "metrics": metrics or {},
-            }
+            optimizer_state = optimizer.state_dict()
 
-            if rank != 0:
-                self._barrier()
-                return
+        state = {
+            "model": model_state,
+            "optimizer": optimizer_state,
+            "scheduler": scheduler.state_dict(),
+            "step": step,
+            "timestamp": datetime.now().isoformat(),
+            "metrics": metrics or {},
+            "fsdp": is_fsdp,
+        }
 
-            with self._thread_lock:
-                if self._write_thread and self._write_thread.is_alive():
-                    self._write_thread.join()
-                    self._raise_thread_error()
-                self._write_thread = threading.Thread(
-                    target=self._async_write, args=(state, step), daemon=True
-                )
-                self._write_thread.start()
+        if rank != 0:
+            self._barrier()
+            return
+
+        with self._thread_lock:
+            if self._write_thread and self._write_thread.is_alive():
+                self._write_thread.join()
+                self._raise_thread_error()
+            self._write_thread = threading.Thread(
+                target=self._async_write, args=(state, step), daemon=True
+            )
+            self._write_thread.start()
 
         self._barrier()
 
@@ -267,12 +274,16 @@ class AsyncCheckpointWriter:
             return 0
 
         state = torch.load(Path(path) / "state.pt", map_location="cpu", weights_only=False)
-        state_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=False)
-        optim_config = FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=False)
-        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, state_config, optim_config):
+        if isinstance(model, FSDP) and state.get("fsdp", False):
+            state_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=False)
+            optim_config = FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=False)
+            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, state_config, optim_config):
+                model.load_state_dict(state["model"])
+                optimizer_state = FSDP.optim_state_dict_to_load(model, optimizer, state["optimizer"])
+                optimizer.load_state_dict(optimizer_state)
+        else:
             model.load_state_dict(state["model"])
-            optimizer_state = FSDP.optim_state_dict_to_load(model, optimizer, state["optimizer"])
-            optimizer.load_state_dict(optimizer_state)
+            optimizer.load_state_dict(state["optimizer"])
         scheduler.load_state_dict(state["scheduler"])
         if rank == 0:
             print(f"[checkpoint] Restored from step {step} ({path})")

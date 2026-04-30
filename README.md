@@ -46,6 +46,7 @@ make infra-up SSH_CIDR=<your-public-ip>/32
 make infra-down SSH_CIDR=<your-public-ip>/32   # spin down instances (keeps S3/state)
 
 # Submit training job via Slurm
+make train-smoke                   # 1 GPU smoke test for the training loop
 make train                          # single-node, 4x V100
 make train-multi                    # multi-node, 8x V100
 

@@ -14,6 +14,7 @@ from datetime import datetime
 
 import torch
 import torch.distributed as dist
+from torch.utils.data import Dataset
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     MixedPrecision,
@@ -21,6 +22,8 @@ from torch.distributed.fsdp import (
 )
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import (
+    GPT2Config,
+    GPT2LMHeadModel,
     AutoModelForCausalLM,
     AutoTokenizer,
     get_cosine_schedule_with_warmup,
@@ -40,12 +43,20 @@ def _handle_sigterm(signum, frame):
 
 
 def setup_distributed():
-    dist.init_process_group("nccl")
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+
+    if world_size == 1 and "MASTER_ADDR" not in os.environ:
+        return rank, world_size, local_rank, False
+
+    backend = "nccl" if torch.cuda.is_available() else "gloo"
+    dist.init_process_group(backend)
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    torch.cuda.set_device(local_rank)
-    return rank, world_size, local_rank
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+    return rank, world_size, local_rank, True
 
 
 def get_fsdp_config(sharding_strategy="FULL_SHARD"):
@@ -55,23 +66,62 @@ def get_fsdp_config(sharding_strategy="FULL_SHARD"):
         "NO_SHARD": ShardingStrategy.NO_SHARD,
     }
 
-    mp_policy = MixedPrecision(
-        param_dtype=torch.float16,
-        reduce_dtype=torch.float16,
-        buffer_dtype=torch.float16,
-    )
+    if torch.cuda.is_available():
+        mp_policy = MixedPrecision(
+            param_dtype=torch.float16,
+            reduce_dtype=torch.float16,
+            buffer_dtype=torch.float16,
+        )
+    else:
+        mp_policy = None
 
-    return {
+    config = {
         "sharding_strategy": strategies.get(sharding_strategy, ShardingStrategy.FULL_SHARD),
         "mixed_precision": mp_policy,
-        "device_id": torch.cuda.current_device(),
         "limit_all_gathers": True,
     }
+    if torch.cuda.is_available():
+        config["device_id"] = torch.cuda.current_device()
+    return config
 
 
-def load_model_and_tokenizer(model_name, rank):
+class SyntheticCausalLMDataset(Dataset):
+    def __init__(self, size=64, max_length=32, vocab_size=128):
+        self.size = size
+        self.max_length = max_length
+        self.vocab_size = vocab_size
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, idx):
+        tokens = torch.arange(self.max_length, dtype=torch.long) % self.vocab_size
+        tokens = (tokens + idx) % self.vocab_size
+        attention_mask = torch.ones(self.max_length, dtype=torch.long)
+        return {"input_ids": tokens, "attention_mask": attention_mask}
+
+
+def build_smoke_model(max_length):
+    config = GPT2Config(
+        vocab_size=128,
+        n_positions=max_length,
+        n_ctx=max_length,
+        n_embd=64,
+        n_layer=2,
+        n_head=4,
+        bos_token_id=0,
+        eos_token_id=1,
+        pad_token_id=0,
+    )
+    return GPT2LMHeadModel(config)
+
+
+def load_model_and_tokenizer(model_name, rank, smoke_test=False, max_length=32):
     if rank == 0:
         print(f"Loading model: {model_name}")
+
+    if smoke_test:
+        return build_smoke_model(max_length), None
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if tokenizer.pad_token is None:
@@ -86,7 +136,10 @@ def load_model_and_tokenizer(model_name, rank):
     return model, tokenizer
 
 
-def prepare_dataset(tokenizer, dataset_name, max_length=512, split="train"):
+def prepare_dataset(tokenizer, dataset_name, max_length=512, split="train", smoke_test=False):
+    if smoke_test:
+        return SyntheticCausalLMDataset(size=64, max_length=max_length)
+
     dataset = load_dataset(dataset_name, split=split)
 
     def tokenize(examples):
@@ -106,19 +159,36 @@ def prepare_dataset(tokenizer, dataset_name, max_length=512, split="train"):
 def train(args):
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
-    rank, world_size, local_rank = setup_distributed()
+    rank, world_size, local_rank, distributed = setup_distributed()
+    device = torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else torch.device("cpu")
 
-    model, tokenizer = load_model_and_tokenizer(args.model, rank)
+    model, tokenizer = load_model_and_tokenizer(
+        args.model,
+        rank,
+        smoke_test=args.smoke_test,
+        max_length=args.max_length,
+    )
+    model = model.to(device)
 
-    fsdp_config = get_fsdp_config(args.sharding_strategy)
-    model = FSDP(model, **fsdp_config)
+    use_fsdp = distributed and torch.cuda.is_available() and not args.smoke_test
+    if use_fsdp:
+        fsdp_config = get_fsdp_config(args.sharding_strategy)
+        model = FSDP(model, **fsdp_config)
 
-    dataset = prepare_dataset(tokenizer, args.dataset, max_length=args.max_length)
-    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
+    dataset = prepare_dataset(
+        tokenizer,
+        args.dataset,
+        max_length=args.max_length,
+        smoke_test=args.smoke_test,
+    )
+    sampler = None
+    if distributed and world_size > 1:
+        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         sampler=sampler,
+        shuffle=sampler is None,
         num_workers=2,
         pin_memory=True,
     )
@@ -159,18 +229,20 @@ def train(args):
 
     model.train()
     for epoch in range(args.epochs):
-        sampler.set_epoch(epoch)
+        if sampler is not None:
+            sampler.set_epoch(epoch)
         for batch_idx, batch in enumerate(dataloader):
             if _SIGTERM_RECEIVED:
                 if rank == 0:
                     print(f"SIGTERM — saving checkpoint at step {global_step}")
                 ckpt_writer.save(model, optimizer, scheduler, global_step, rank=rank)
                 ckpt_writer.wait()
-                dist.destroy_process_group()
+                if distributed:
+                    dist.destroy_process_group()
                 return
 
-            input_ids = batch["input_ids"].to(local_rank)
-            attention_mask = batch["attention_mask"].to(local_rank)
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
 
             outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
             loss = outputs.loss / args.gradient_accumulation
@@ -246,7 +318,8 @@ def train(args):
     ckpt_writer.save(model, optimizer, scheduler, global_step, rank=rank)
     ckpt_writer.wait()
 
-    dist.destroy_process_group()
+    if distributed:
+        dist.destroy_process_group()
 
 
 def parse_args():
@@ -267,6 +340,8 @@ def parse_args():
     parser.add_argument("--s3-prefix", default=None)
     parser.add_argument("--sharding-strategy", default="FULL_SHARD",
                         choices=["FULL_SHARD", "SHARD_GRAD_OP", "NO_SHARD"])
+    parser.add_argument("--smoke-test", action="store_true",
+                        help="Use a tiny synthetic dataset and a tiny local model for a fast local validation run.")
     return parser.parse_args()
 
 

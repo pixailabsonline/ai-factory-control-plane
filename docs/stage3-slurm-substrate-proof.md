@@ -38,6 +38,7 @@ That taint prevents arbitrary Kubernetes pods from landing on the Slurm GPU pool
 Run these from the provisioned master node:
 
 ```bash
+make train-smoke
 make substrate-status
 make slurm-status
 make platform-status
@@ -67,6 +68,7 @@ Stage 3 is accepted when all of the following are true:
 - All GPU substrate nodes carry the `ai-factory/*` Slurm ownership labels.
 - GPU substrate nodes carry the `ai-factory/gpu-owner=slurm-batch:NoSchedule` taint after GPU Operator installation.
 - GPU Operator pods are healthy in the `gpu-operator` namespace.
+- `make train-smoke` completes a short model-training run and writes checkpoints.
 - `sinfo -Nel` shows all expected Slurm nodes.
 - `scontrol show partition gpu` and `scontrol show partition slurm-batch` both resolve.
 - A researcher can submit with `sbatch` without knowing or using Kubernetes.

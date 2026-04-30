@@ -1,4 +1,4 @@
-.PHONY: train profile scaling eval serve bench infra-init infra-plan infra-up infra-down cost-check jobs gpu-status substrate-status slurm-status platform-status logs
+.PHONY: train train-smoke profile scaling eval serve bench infra-init infra-plan infra-up infra-down cost-check jobs gpu-status substrate-status slurm-status platform-status logs
 
 SSH_CIDR ?= 127.0.0.1/32
 
@@ -6,6 +6,9 @@ SSH_CIDR ?= 127.0.0.1/32
 
 train:
 	sbatch slurm/train-single-node.sbatch
+
+train-smoke:
+	sbatch slurm/train-smoke.sbatch
 
 train-multi:
 	sbatch slurm/train-multi-node.sbatch
