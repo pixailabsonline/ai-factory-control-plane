@@ -178,6 +178,36 @@ resource "aws_s3_bucket" "checkpoints" {
   bucket = "ai-factory-checkpoints-${data.aws_caller_identity.current.account_id}"
 }
 
+# --- S3: bootstrap scripts (sidestep 16KB user_data limit) ---
+
+resource "aws_s3_object" "bootstrap_common" {
+  bucket = aws_s3_bucket.checkpoints.bucket
+  key    = "bootstrap/bootstrap_common.sh"
+  source = "${path.module}/bootstrap_common.sh"
+  etag   = filemd5("${path.module}/bootstrap_common.sh")
+}
+
+resource "aws_s3_object" "bootstrap_k8s" {
+  bucket = aws_s3_bucket.checkpoints.bucket
+  key    = "bootstrap/bootstrap_k8s.sh"
+  source = "${path.module}/bootstrap_k8s.sh"
+  etag   = filemd5("${path.module}/bootstrap_k8s.sh")
+}
+
+resource "aws_s3_object" "bootstrap_slurm" {
+  bucket = aws_s3_bucket.checkpoints.bucket
+  key    = "bootstrap/bootstrap_slurm.sh"
+  source = "${path.module}/bootstrap_slurm.sh"
+  etag   = filemd5("${path.module}/bootstrap_slurm.sh")
+}
+
+resource "aws_s3_object" "bootstrap_observability" {
+  bucket = aws_s3_bucket.checkpoints.bucket
+  key    = "bootstrap/bootstrap_observability.sh"
+  source = "${path.module}/bootstrap_observability.sh"
+  etag   = filemd5("${path.module}/bootstrap_observability.sh")
+}
+
 resource "aws_s3_bucket_versioning" "checkpoints" {
   bucket = aws_s3_bucket.checkpoints.id
 
@@ -334,10 +364,8 @@ resource "aws_instance" "training" {
   vpc_security_group_ids = [aws_security_group.training.id]
   iam_instance_profile   = aws_iam_instance_profile.training.name
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    bootstrap_common_b64        = filebase64("${path.module}/bootstrap_common.sh")
-    bootstrap_k8s_b64           = filebase64("${path.module}/bootstrap_k8s.sh")
-    bootstrap_slurm_b64         = filebase64("${path.module}/bootstrap_slurm.sh")
-    bootstrap_observability_b64 = filebase64("${path.module}/bootstrap_observability.sh")
+    bootstrap_bucket = aws_s3_bucket.checkpoints.bucket
+    region           = var.region
   })
   placement_group = var.multi_node ? aws_placement_group.training[0].id : null
 
