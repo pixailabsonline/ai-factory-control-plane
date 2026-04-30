@@ -1,0 +1,67 @@
+#!/bin/bash
+set -eo pipefail
+
+LOGFILE="/var/log/ai-factory-setup.log"
+exec > >(tee -a "$LOGFILE") 2>&1
+
+BOOTSTRAP_DIR="/opt/ai-factory/bootstrap"
+mkdir -p "$BOOTSTRAP_DIR"
+
+TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+md() {
+  curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" "http://169.254.169.254/latest/meta-data/$1"
+}
+
+export INSTANCE_ID
+export REGION
+export HOSTNAME
+export NODE_IP
+export NODE_ROLE
+
+INSTANCE_ID=$(md instance-id)
+REGION=$(md placement/region)
+HOSTNAME=$(hostname -s)
+NODE_IP=$(md local-ipv4)
+NODE_ROLE=$(md tags/instance/Role 2>/dev/null || echo "worker")
+
+echo "=== AI Factory Node Provisioning ==="
+echo "Instance ID: $INSTANCE_ID"
+echo "Instance Type: $(md instance-type)"
+echo "Hostname: $HOSTNAME / IP: $NODE_IP / Role: $NODE_ROLE"
+echo "Started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+cat > "$BOOTSTRAP_DIR/bootstrap_common.sh.b64" <<'COMMON_B64'
+${bootstrap_common_b64}
+COMMON_B64
+
+cat > "$BOOTSTRAP_DIR/bootstrap_k8s.sh.b64" <<'K8S_B64'
+${bootstrap_k8s_b64}
+K8S_B64
+
+cat > "$BOOTSTRAP_DIR/bootstrap_slurm.sh.b64" <<'SLURM_B64'
+${bootstrap_slurm_b64}
+SLURM_B64
+
+cat > "$BOOTSTRAP_DIR/bootstrap_observability.sh.b64" <<'OBS_B64'
+${bootstrap_observability_b64}
+OBS_B64
+
+base64 -d "$BOOTSTRAP_DIR/bootstrap_common.sh.b64" > "$BOOTSTRAP_DIR/bootstrap_common.sh"
+base64 -d "$BOOTSTRAP_DIR/bootstrap_k8s.sh.b64" > "$BOOTSTRAP_DIR/bootstrap_k8s.sh"
+base64 -d "$BOOTSTRAP_DIR/bootstrap_slurm.sh.b64" > "$BOOTSTRAP_DIR/bootstrap_slurm.sh"
+base64 -d "$BOOTSTRAP_DIR/bootstrap_observability.sh.b64" > "$BOOTSTRAP_DIR/bootstrap_observability.sh"
+chmod +x "$BOOTSTRAP_DIR"/*.sh
+
+"$BOOTSTRAP_DIR/bootstrap_common.sh"
+
+ACCOUNT_ID=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)
+export BUCKET="ai-factory-checkpoints-$ACCOUNT_ID"
+
+"$BOOTSTRAP_DIR/bootstrap_k8s.sh"
+"$BOOTSTRAP_DIR/bootstrap_slurm.sh"
+"$BOOTSTRAP_DIR/bootstrap_observability.sh"
+
+echo "=== Provisioning complete: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+touch /root/.training-node-ready

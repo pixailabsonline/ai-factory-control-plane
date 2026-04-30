@@ -111,6 +111,7 @@ The bootstrap should be split into clear layers:
 - NVIDIA GPU Operator setup on the substrate.
 - Slurm controller and worker setup on top.
 - Slurm partition/GRES config mapped to the Slurm-owned GPU pool.
+- Kubernetes-native training operators are not installed in the default path.
 
 The repo should make that layering visible in code and docs. A reader should not wonder whether Kubernetes and Slurm are peers, competitors, or separate islands. Kubernetes is the substrate. Slurm is the batch interface.
 

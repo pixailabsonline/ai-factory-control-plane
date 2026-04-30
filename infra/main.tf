@@ -333,8 +333,13 @@ resource "aws_instance" "training" {
   subnet_id              = data.aws_subnets.gpu_capable.ids[0]
   vpc_security_group_ids = [aws_security_group.training.id]
   iam_instance_profile   = aws_iam_instance_profile.training.name
-  user_data              = file("${path.module}/user_data.sh")
-  placement_group        = var.multi_node ? aws_placement_group.training[0].id : null
+  user_data = templatefile("${path.module}/user_data.sh.tftpl", {
+    bootstrap_common_b64        = filebase64("${path.module}/bootstrap_common.sh")
+    bootstrap_k8s_b64           = filebase64("${path.module}/bootstrap_k8s.sh")
+    bootstrap_slurm_b64         = filebase64("${path.module}/bootstrap_slurm.sh")
+    bootstrap_observability_b64 = filebase64("${path.module}/bootstrap_observability.sh")
+  })
+  placement_group = var.multi_node ? aws_placement_group.training[0].id : null
 
   root_block_device {
     volume_size = var.volume_size
