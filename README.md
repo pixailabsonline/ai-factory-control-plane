@@ -77,6 +77,8 @@ Stage 3 is now proven end to end on the current cluster shape:
 - distributed multi-node training passes
 - checkpoint recovery passes
 
+Use [docs/model-artifact-manifest.md](docs/model-artifact-manifest.md) to record trained checkpoints or exported model artifacts without checking binaries into git.
+
 ## Ops Journal
 
 `ops-journal/` contains real incident logs from training runs — NCCL hangs, GPU failures, checkpoint corruption, OOM debugging. Each entry follows:

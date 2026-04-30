@@ -21,6 +21,8 @@ This directory records real runs, failures, and fixes from the live cluster.
 - Resume/recovery is live.
 - The repo is not just a design doc. It contains run evidence.
 
+For model outputs you want to cite, add a companion manifest from [docs/model-artifact-manifest.md](../docs/model-artifact-manifest.md).
+
 ## How To Read It
 
 - Start with the dated entries.
