@@ -1,6 +1,10 @@
 """
 Async checkpoint writer — training doesn't pause while checkpoints are saved.
-Validates integrity before promoting, syncs to S3 for durability.
+
+For FSDP models: uses SHARDED_STATE_DICT + torch.distributed.checkpoint so each
+rank writes only its own shard locally — no all-gather across GPUs, no NIC saturation.
+
+For non-FSDP models: original rank-0-only async write path.
 """
 
 import json
@@ -32,25 +36,113 @@ class AsyncCheckpointWriter:
         self._thread_lock = threading.Lock()
 
     def save(self, model, optimizer, scheduler, step, metrics=None, rank=0, model_name=None):
-        is_fsdp = isinstance(model, FSDP)
-        if is_fsdp:
-            state_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-            optim_config = FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=True)
-            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, state_config, optim_config):
-                model_state = model.state_dict()
-                optimizer_state = FSDP.optim_state_dict(model, optimizer)
+        if isinstance(model, FSDP):
+            self._save_sharded(model, optimizer, scheduler, step, metrics, rank, model_name)
         else:
-            model_state = model.state_dict()
-            optimizer_state = optimizer.state_dict()
+            self._save_full(model, optimizer, scheduler, step, metrics, rank, model_name)
 
+    # ------------------------------------------------------------------
+    # Sharded save — FSDP only, each rank writes its own shard locally
+    # ------------------------------------------------------------------
+
+    def _save_sharded(self, model, optimizer, scheduler, step, metrics, rank, model_name):
+        import torch.distributed.checkpoint as dist_cp
+
+        staging_dir = self.base_dir / f".staging-{step}"
+        final_dir = self.base_dir / f"checkpoint-{step}"
+
+        # Rank 0 clears any stale staging dir; barrier before any rank creates dirs
+        if rank == 0 and staging_dir.exists():
+            shutil.rmtree(staging_dir)
+        self._barrier()
+        staging_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. Model — sharded save via DCP, purely local I/O on each rank
+        model_dir = staging_dir / "model"
+        model_dir.mkdir(exist_ok=True)
+        with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT):
+            model_sd = model.state_dict()
+        dist_cp.save({"model": model_sd}, storage_writer=dist_cp.FileSystemWriter(str(model_dir)))
+
+        # 2. Optimizer — each rank saves its own flat-param states directly,
+        #    no FSDP wrapper so no collective ops
+        optim_dir = staging_dir / f"optim-rank-{rank}"
+        optim_dir.mkdir(exist_ok=True)
+        torch.save(optimizer.state_dict(), optim_dir / "optim.pt")
+
+        # 3. All ranks barrier — everyone has finished writing their shards
+        self._barrier()
+
+        # 4. Rank 0 writes scheduler + metadata and atomically promotes staging → final
+        if rank == 0:
+            torch.save({
+                "scheduler": scheduler.state_dict(),
+                "step": step,
+                "timestamp": datetime.now().isoformat(),
+                "metrics": metrics or {},
+                "model_name": model_name,
+                "world_size": self._world_size(),
+                "sharded": True,
+            }, staging_dir / "train_state.pt")
+
+            with open(staging_dir / "meta.json", "w") as f:
+                json.dump({
+                    "step": step,
+                    "sharded": True,
+                    "world_size": self._world_size(),
+                    "timestamp": datetime.now().isoformat(),
+                }, f, indent=2)
+
+            if final_dir.exists():
+                shutil.rmtree(final_dir)
+            staging_dir.rename(final_dir)
+            self._cleanup_old_checkpoints()
+            if self.s3_bucket:
+                self._sync_to_s3(final_dir, step)
+            print(f"[checkpoint] Saved sharded checkpoint step {step} → {final_dir}")
+
+        self._barrier()
+
+    def _restore_sharded(self, model, optimizer, scheduler, path):
+        import torch.distributed.checkpoint as dist_cp
+        rank = self._rank()
+        ckpt_path = Path(path)
+
+        # 1. Model: load shards via DCP — each rank reads its own shard
+        with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT):
+            model_sd = model.state_dict()  # template with correct shapes
+        dist_cp.load({"model": model_sd}, storage_reader=dist_cp.FileSystemReader(str(ckpt_path / "model")))
+        with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT):
+            model.load_state_dict(model_sd)
+
+        # 2. Optimizer: each rank loads its own flat-param state
+        optim_path = ckpt_path / f"optim-rank-{rank}" / "optim.pt"
+        if optim_path.exists():
+            optimizer.load_state_dict(
+                torch.load(optim_path, map_location="cpu", weights_only=False)
+            )
+        else:
+            print(f"[checkpoint] WARNING: no optimizer shard found for rank {rank} at {optim_path}")
+
+        # 3. Scheduler + step: rank 0's train_state is authoritative
+        train_state = torch.load(ckpt_path / "train_state.pt", map_location="cpu", weights_only=False)
+        scheduler.load_state_dict(train_state["scheduler"])
+        return train_state["step"]
+
+    # ------------------------------------------------------------------
+    # Full (non-FSDP) save — original rank-0-only async write
+    # ------------------------------------------------------------------
+
+    def _save_full(self, model, optimizer, scheduler, step, metrics, rank, model_name):
         state = {
-            "model": model_state,
-            "optimizer": optimizer_state,
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "step": step,
             "timestamp": datetime.now().isoformat(),
             "metrics": metrics or {},
-            "fsdp": is_fsdp,
+            "fsdp": False,
+            "sharded": False,
             "model_name": model_name,
         }
 
@@ -87,11 +179,12 @@ class AsyncCheckpointWriter:
                 "checksum": checksum,
                 "size_bytes": state_path.stat().st_size,
                 "metrics": state.get("metrics", {}),
+                "sharded": False,
             }
             with open(staging_dir / "meta.json", "w") as f:
                 json.dump(meta, f, indent=2)
 
-            if not self._validate(staging_dir, checksum):
+            if not self._validate_full(staging_dir, checksum):
                 shutil.rmtree(staging_dir)
                 print(f"[checkpoint] CORRUPTED checkpoint at step {step} — discarded")
                 return
@@ -108,15 +201,16 @@ class AsyncCheckpointWriter:
                 shutil.rmtree(staging_dir)
             print(f"[checkpoint] write failed for step {step}: {exc}")
 
-    def _validate(self, checkpoint_dir, expected_checksum):
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def _validate_full(self, checkpoint_dir, expected_checksum):
         state_path = checkpoint_dir / "state.pt"
         if not state_path.exists():
             return False
-
-        actual_checksum = self._compute_checksum(state_path)
-        if actual_checksum != expected_checksum:
+        if self._compute_checksum(state_path) != expected_checksum:
             return False
-
         try:
             torch.load(state_path, map_location="cpu", weights_only=False)
             return True
@@ -129,6 +223,10 @@ class AsyncCheckpointWriter:
             for chunk in iter(lambda: f.read(8192), b""):
                 sha256.update(chunk)
         return sha256.hexdigest()
+
+    # ------------------------------------------------------------------
+    # Checkpoint directory bookkeeping
+    # ------------------------------------------------------------------
 
     def _checkpoint_step(self, checkpoint_dir):
         if not checkpoint_dir.name.startswith("checkpoint-"):
@@ -154,6 +252,31 @@ class AsyncCheckpointWriter:
             _, oldest = checkpoints.pop(0)
             shutil.rmtree(oldest)
 
+    def latest_valid(self):
+        for step, ckpt_dir in reversed(self._checkpoint_dirs()):
+            meta_path = ckpt_dir / "meta.json"
+            if not meta_path.exists():
+                continue
+            with open(meta_path) as f:
+                meta = json.load(f)
+
+            if meta.get("sharded"):
+                # Valid if DCP model shards and train_state exist
+                if (ckpt_dir / "model").exists() and (ckpt_dir / "train_state.pt").exists():
+                    return str(ckpt_dir), meta.get("step", step)
+            else:
+                state_path = ckpt_dir / "state.pt"
+                if not state_path.exists():
+                    continue
+                checksum = meta.get("checksum")
+                if checksum and self._validate_full(ckpt_dir, checksum):
+                    return str(ckpt_dir), meta.get("step", step)
+        return None, 0
+
+    # ------------------------------------------------------------------
+    # S3
+    # ------------------------------------------------------------------
+
     def _s3_prefix_value(self):
         return (self.s3_prefix or "checkpoints").strip("/")
 
@@ -162,63 +285,17 @@ class AsyncCheckpointWriter:
             import boto3
             s3 = boto3.client("s3")
             prefix = self._s3_prefix_value()
-            for file_path in checkpoint_dir.iterdir():
-                s3_key = f"{prefix}/checkpoint-{step}/{file_path.name}"
-                s3.upload_file(str(file_path), self.s3_bucket, s3_key)
+            for file_path in checkpoint_dir.rglob("*"):
+                if file_path.is_file():
+                    rel = file_path.relative_to(checkpoint_dir)
+                    s3_key = f"{prefix}/checkpoint-{step}/{rel}"
+                    s3.upload_file(str(file_path), self.s3_bucket, s3_key)
         except Exception as e:
             print(f"[checkpoint] S3 sync failed for step {step}: {e}")
 
-    def _download_latest_from_s3(self, rank):
-        if not self.s3_bucket:
-            return None, 0
-
-        try:
-            import boto3
-            s3 = boto3.client("s3")
-            prefix = self._s3_prefix_value()
-            paginator = s3.get_paginator("list_objects_v2")
-            by_step = {}
-
-            for page in paginator.paginate(Bucket=self.s3_bucket, Prefix=f"{prefix}/checkpoint-"):
-                for obj in page.get("Contents", []):
-                    key = obj["Key"]
-                    rel = key[len(prefix) + 1:]
-                    parts = rel.split("/", 1)
-                    if len(parts) != 2 or not parts[0].startswith("checkpoint-"):
-                        continue
-                    try:
-                        step = int(parts[0].split("-", 1)[1])
-                    except ValueError:
-                        continue
-                    by_step.setdefault(step, {})[parts[1]] = key
-
-            for step in sorted(by_step, reverse=True):
-                keys = by_step[step]
-                if "state.pt" not in keys or "meta.json" not in keys:
-                    continue
-
-                restore_root = self.base_dir / f".restore-rank-{rank}"
-                staging_dir = restore_root / f".staging-checkpoint-{step}"
-                final_dir = restore_root / f"checkpoint-{step}"
-                if staging_dir.exists():
-                    shutil.rmtree(staging_dir)
-                if final_dir.exists():
-                    shutil.rmtree(final_dir)
-                staging_dir.mkdir(parents=True, exist_ok=True)
-
-                for filename in ("state.pt", "meta.json"):
-                    s3.download_file(self.s3_bucket, keys[filename], str(staging_dir / filename))
-
-                with open(staging_dir / "meta.json") as f:
-                    meta = json.load(f)
-                if self._validate(staging_dir, meta["checksum"]):
-                    staging_dir.rename(final_dir)
-                    return str(final_dir), step
-                shutil.rmtree(staging_dir)
-        except Exception as e:
-            print(f"[checkpoint] S3 restore failed: {e}")
-
-        return None, 0
+    # ------------------------------------------------------------------
+    # Distributed helpers
+    # ------------------------------------------------------------------
 
     def _barrier(self):
         if dist.is_available() and dist.is_initialized():
@@ -247,45 +324,44 @@ class AsyncCheckpointWriter:
                 self._write_thread.join()
             self._raise_thread_error()
 
-    def latest_valid(self):
-        for step, ckpt_dir in reversed(self._checkpoint_dirs()):
-            meta_path = ckpt_dir / "meta.json"
-            state_path = ckpt_dir / "state.pt"
-            if not meta_path.exists() or not state_path.exists():
-                continue
-            with open(meta_path) as f:
-                meta = json.load(f)
-            if self._validate(ckpt_dir, meta["checksum"]):
-                return str(ckpt_dir), meta.get("step", step)
-        return None, 0
+    # ------------------------------------------------------------------
+    # Restore
+    # ------------------------------------------------------------------
 
     def restore(self, model, optimizer, scheduler, device):
         rank = self._rank()
         path, step = self.latest_valid()
+
         if self._world_size() > 1:
             steps = [None for _ in range(self._world_size())]
             dist.all_gather_object(steps, step)
             if len(set(steps)) != 1:
                 path, step = None, 0
 
-        if path is None and self.s3_bucket:
-            path, step = self._download_latest_from_s3(rank)
-
         if path is None:
             return 0
 
-        state = torch.load(Path(path) / "state.pt", map_location="cpu", weights_only=False)
-        if isinstance(model, FSDP) and state.get("fsdp", False):
-            state_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=False)
-            optim_config = FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=False)
-            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, state_config, optim_config):
-                model.load_state_dict(state["model"])
-                optimizer_state = FSDP.optim_state_dict_to_load(model, optimizer, state["optimizer"])
-                optimizer.load_state_dict(optimizer_state)
+        ckpt_path = Path(path)
+        with open(ckpt_path / "meta.json") as f:
+            meta = json.load(f)
+
+        if meta.get("sharded") and isinstance(model, FSDP):
+            step = self._restore_sharded(model, optimizer, scheduler, path)
         else:
-            model.load_state_dict(state["model"])
-            optimizer.load_state_dict(state["optimizer"])
-        scheduler.load_state_dict(state["scheduler"])
+            state = torch.load(ckpt_path / "state.pt", map_location="cpu", weights_only=False)
+            if isinstance(model, FSDP) and state.get("fsdp", False):
+                state_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=False)
+                optim_config = FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=False)
+                with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, state_config, optim_config):
+                    model.load_state_dict(state["model"])
+                    optimizer_state = FSDP.optim_state_dict_to_load(model, optimizer, state["optimizer"])
+                    optimizer.load_state_dict(optimizer_state)
+            else:
+                model.load_state_dict(state["model"])
+                optimizer.load_state_dict(state["optimizer"])
+            scheduler.load_state_dict(state["scheduler"])
+            step = state.get("step", step)
+
         if rank == 0:
             print(f"[checkpoint] Restored from step {step} ({path})")
         return step
