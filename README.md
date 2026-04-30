@@ -72,6 +72,11 @@ make bench
 
 `allowed_ssh_cidrs` is now required explicitly. The default-open `0.0.0.0/0` posture has been removed.
 
+Stage 3 is now proven end to end on the current cluster shape:
+- smoke training passes
+- distributed multi-node training passes
+- checkpoint recovery passes
+
 ## Ops Journal
 
 `ops-journal/` contains real incident logs from training runs — NCCL hangs, GPU failures, checkpoint corruption, OOM debugging. Each entry follows:
