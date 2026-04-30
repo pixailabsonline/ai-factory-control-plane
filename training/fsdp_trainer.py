@@ -203,9 +203,10 @@ def train(args):
     )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+    warmup_steps = min(args.warmup_steps, args.max_steps // 10)
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=args.warmup_steps,
+        num_warmup_steps=warmup_steps,
         num_training_steps=args.max_steps,
     )
 
