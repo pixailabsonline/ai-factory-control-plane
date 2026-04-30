@@ -36,20 +36,30 @@ export NCCL_TIMEOUT=1800
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-/tmp/checkpoints/$SLURM_JOB_ID}"
 mkdir -p "$CHECKPOINT_DIR"
 
-# Seed checkpoint from a previous run so all ranks resume at the same step
+# Seed checkpoint from a previous run so all ranks resume at the same step.
+# Pack on master, unpack on every node via a temp S3 object (no NFS/SSH needed).
 if [ -n "${RESUME_FROM:-}" ]; then
     RESUME_STEP=$(basename "$RESUME_FROM" | sed 's/checkpoint-//')
     RESUME_DEST="$CHECKPOINT_DIR/checkpoint-$RESUME_STEP"
     echo "Seeding resume checkpoint step=$RESUME_STEP from $RESUME_FROM"
 
+    # Copy locally on master first
     cp -r "$RESUME_FROM" "$RESUME_DEST"
 
-    # Push to every other node so all ranks see the same checkpoint
-    for NODE in $(scontrol show hostnames "$SLURM_NODELIST" | tail -n +2); do
-        ssh "$NODE" "mkdir -p '$CHECKPOINT_DIR'"
-        rsync -a "$RESUME_FROM/" "${NODE}:${RESUME_DEST}/"
-    done
-    echo "Checkpoint seeded on all nodes"
+    # Pack and upload to S3, then each node downloads
+    S3_BUCKET="${S3_BUCKET:-ai-factory-checkpoints-737213639346}"
+    S3_SEED_KEY="resume-seeds/seed-${SLURM_JOB_ID}-step-${RESUME_STEP}.tar.gz"
+    tar -czf /tmp/seed-${SLURM_JOB_ID}.tar.gz -C "$CHECKPOINT_DIR" "checkpoint-${RESUME_STEP}"
+    aws s3 cp /tmp/seed-${SLURM_JOB_ID}.tar.gz "s3://${S3_BUCKET}/${S3_SEED_KEY}"
+    rm -f /tmp/seed-${SLURM_JOB_ID}.tar.gz
+
+    # All nodes (including master) unpack from S3
+    srun --nodes="$SLURM_NNODES" --ntasks="$SLURM_NNODES" --ntasks-per-node=1 \
+        bash -c "mkdir -p '$CHECKPOINT_DIR' && aws s3 cp 's3://${S3_BUCKET}/${S3_SEED_KEY}' /tmp/seed-${SLURM_JOB_ID}.tar.gz && tar -xzf /tmp/seed-${SLURM_JOB_ID}.tar.gz -C '$CHECKPOINT_DIR' && rm -f /tmp/seed-${SLURM_JOB_ID}.tar.gz"
+
+    # Clean up seed object
+    aws s3 rm "s3://${S3_BUCKET}/${S3_SEED_KEY}" || true
+    echo "Checkpoint seeded on all nodes via S3"
 fi
 
 srun --nodes=2 --ntasks=2 --ntasks-per-node=1 \
