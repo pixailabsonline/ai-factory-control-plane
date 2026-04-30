@@ -5,7 +5,7 @@ SSH_CIDR ?= 127.0.0.1/32
 # --- Slurm jobs (run on the cluster) ---
 
 train:
-	sbatch slurm/train-single-node.sbatch
+	sbatch --export=ALL,MAX_STEPS=$(MAX_STEPS),CKPT_EVERY=$(CKPT_EVERY) slurm/train-single-node.sbatch
 
 train-smoke:
 	sbatch slurm/train-smoke.sbatch
