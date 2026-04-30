@@ -51,6 +51,9 @@ make train-multi                    # multi-node, 8x V100
 # Monitor
 make jobs                           # squeue
 make gpu-status                     # sinfo
+make substrate-status               # Kubernetes nodes + GPU Operator pods
+make slurm-status                   # Slurm nodes, queues, partitions
+make platform-status                # substrate + Slurm proof
 make logs                           # recent log files
 
 # Profile a short run

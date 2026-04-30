@@ -18,17 +18,21 @@ export REGION
 export HOSTNAME
 export NODE_IP
 export NODE_ROLE
+export NODE_INDEX
+export CLUSTER_SIZE
 
 INSTANCE_ID=$(md instance-id)
 REGION=$(md placement/region)
 HOSTNAME=$(hostname -s)
 NODE_IP=$(md local-ipv4)
 NODE_ROLE=$(md tags/instance/Role 2>/dev/null || echo "worker")
+NODE_INDEX=$(md tags/instance/NodeIndex 2>/dev/null || echo "0")
+CLUSTER_SIZE=$(md tags/instance/ClusterSize 2>/dev/null || echo "1")
 
 echo "=== AI Factory Node Provisioning ==="
 echo "Instance ID: $INSTANCE_ID"
 echo "Instance Type: $(md instance-type)"
-echo "Hostname: $HOSTNAME / IP: $NODE_IP / Role: $NODE_ROLE"
+echo "Hostname: $HOSTNAME / IP: $NODE_IP / Role: $NODE_ROLE / Index: $NODE_INDEX / Cluster size: $CLUSTER_SIZE"
 echo "Started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 cat > "$BOOTSTRAP_DIR/bootstrap_common.sh.b64" <<'COMMON_B64'

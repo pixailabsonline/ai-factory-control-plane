@@ -115,6 +115,17 @@ The bootstrap should be split into clear layers:
 
 The repo should make that layering visible in code and docs. A reader should not wonder whether Kubernetes and Slurm are peers, competitors, or separate islands. Kubernetes is the substrate. Slurm is the batch interface.
 
+## Current Bootstrap Contract
+
+The current bootstrap implements that split as follows:
+
+- `infra/bootstrap_k8s.sh` starts k3s, installs NVIDIA GPU Operator, labels GPU substrate nodes as Slurm-owned capacity, and taints them against arbitrary Kubernetes scheduling.
+- `infra/bootstrap_slurm.sh` starts `slurmctld` on the master node and `slurmd` on every training node.
+- Slurm node metadata, shared Munge key, and shared Slurm config are coordinated through the checkpoint S3 bucket under a master-node-scoped prefix.
+- `Makefile` exposes `make substrate-status`, `make slurm-status`, and `make platform-status` so demos show both substrate health and Slurm health.
+
+See `docs/stage3-slurm-substrate-proof.md` for the validation checklist.
+
 ## Acceptance Criteria
 
 The architecture is correctly expressed when:

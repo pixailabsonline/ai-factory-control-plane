@@ -355,8 +355,12 @@ resource "aws_instance" "training" {
   monitoring    = true
 
   tags = {
-    Name  = "ai-factory-training-${count.index}"
-    Role  = count.index == 0 ? "master" : "worker"
-    Phase = var.multi_node ? "2-multi-node" : "1-single-node"
+    Name          = "ai-factory-training-${count.index}"
+    Role          = count.index == 0 ? "master" : "worker"
+    NodeIndex     = tostring(count.index)
+    ClusterSize   = tostring(local.instance_count)
+    CapacityOwner = "slurm-batch"
+    SlurmPool     = "gpu"
+    Phase         = var.multi_node ? "2-multi-node" : "1-single-node"
   }
 }

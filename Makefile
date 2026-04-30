@@ -1,4 +1,4 @@
-.PHONY: train profile scaling eval serve bench infra-init infra-plan infra-up infra-down cost-check
+.PHONY: train profile scaling eval serve bench infra-init infra-plan infra-up infra-down cost-check jobs gpu-status substrate-status slurm-status platform-status logs
 
 SSH_CIDR ?= 127.0.0.1/32
 
@@ -55,6 +55,18 @@ jobs:
 
 gpu-status:
 	sinfo -p gpu -N -o "%N %G %T %m %e"
+
+substrate-status:
+	kubectl get nodes -L ai-factory/capacity-owner,ai-factory/slurm-pool,ai-factory/scheduler -o wide
+	kubectl get pods -n gpu-operator -o wide
+
+slurm-status:
+	sinfo -Nel
+	squeue -o "%.8i %.20j %.9P %.4t %.10M %.6D %R"
+	scontrol show partition gpu
+	scontrol show partition slurm-batch
+
+platform-status: substrate-status slurm-status
 
 logs:
 	ls -lt logs/ | head -20

@@ -19,10 +19,30 @@ if [ "$NODE_ROLE" = "master" ]; then
     until kubectl get nodes &>/dev/null; do sleep 2; done
     echo "k3s server ready"
 
+    echo "Clearing stale Slurm bootstrap state for master $NODE_IP"
+    aws s3 rm "s3://$BUCKET/slurm/$NODE_IP/" --recursive --region "$REGION" || true
+
     K3S_TOKEN=$(cat /var/lib/rancher/k3s/server/node-token)
     echo "$K3S_TOKEN" | aws s3 cp - "s3://$BUCKET/k3s/node-token" --region "$REGION"
     echo "$NODE_IP" | aws s3 cp - "s3://$BUCKET/k3s/master-ip" --region "$REGION"
     echo "k3s credentials saved to s3://$BUCKET/k3s/"
+
+    EXPECTED_NODES="${CLUSTER_SIZE:-1}"
+    echo "Waiting for $EXPECTED_NODES Kubernetes substrate node(s)..."
+    for i in $(seq 1 60); do
+        NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | awk 'END {print NR+0}')
+        if [ "$NODE_COUNT" -ge "$EXPECTED_NODES" ]; then
+            break
+        fi
+        echo "Kubernetes nodes ready: $NODE_COUNT/$EXPECTED_NODES"
+        sleep 5
+    done
+
+    kubectl label nodes --all \
+        ai-factory/capacity-owner=slurm-batch \
+        ai-factory/slurm-pool=gpu \
+        ai-factory/scheduler=slurm \
+        --overwrite
 
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
@@ -38,6 +58,9 @@ if [ "$NODE_ROLE" = "master" ]; then
         --set dcgmExporter.enabled=true \
         --wait --timeout 10m
     echo "NVIDIA GPU Operator installed"
+
+    kubectl taint nodes --all ai-factory/gpu-owner=slurm-batch:NoSchedule --overwrite || true
+    echo "GPU substrate nodes marked as Slurm-owned batch capacity"
 
 else
     echo "Waiting for k3s master credentials..."
