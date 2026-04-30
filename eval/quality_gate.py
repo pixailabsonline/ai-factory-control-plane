@@ -78,7 +78,8 @@ def run_quality_gate(checkpoint_path, baseline_perplexity=None, max_perplexity=N
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    dataset = load_dataset(eval_dataset, split="test")
+    parts = eval_dataset.split("/", 1)
+    dataset = load_dataset(*parts, split="test") if len(parts) == 2 else load_dataset(eval_dataset, split="test")
 
     perplexity_result = evaluate_perplexity(model, tokenizer, dataset, device=device)
 
