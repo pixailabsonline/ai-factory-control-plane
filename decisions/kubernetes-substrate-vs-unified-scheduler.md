@@ -17,10 +17,10 @@ Why this choice:
 
 Tradeoffs:
 
-- Shared substrate adds operational complexity.
-- Some host resources are still shared.
-- Kubernetes is useful here only if it is proving a real platform capability.
-- If Kubernetes does not visibly help the training/product story, it becomes noise.
+- Extra control-plane pieces mean more bootstrap steps, more failure modes, and more time spent debugging platform state before training even starts.
+- Because the same machines carry both substrate and batch roles, we still need strict ownership rules so service workloads do not steal training capacity.
+- Kubernetes stays only where it gives a concrete product benefit: GPU enablement, node lifecycle, labels/taints, observability, or platform services we can actually use.
+- If Kubernetes does not move one of those outcomes, it is not a platform asset, it is overhead.
 
 When to revisit:
 
