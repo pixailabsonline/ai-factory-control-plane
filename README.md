@@ -1,14 +1,24 @@
 # AI Factory Control Plane
 
-End-to-end GPU training infrastructure: FSDP fine-tuning, Slurm job management, checkpoint recovery, evaluation gates, vLLM inference serving.
+End-to-end GPU training infrastructure: Kubernetes substrate, NVIDIA GPU enablement, Slurm researcher ergonomics, FSDP fine-tuning, checkpoint recovery, evaluation gates, and vLLM inference serving.
 
 ## Stack
 
-- **Slurm** — job scheduling, GPU allocation, preemption handling, multi-node coordination
-- **PyTorch FSDP** — distributed training with full sharding, mixed precision
-- **vLLM** — production inference with continuous batching and PagedAttention
-- **Terraform** — instance provisioning, IAM, S3, CloudWatch, auto-provisioned with Deep Learning AMI
-- **CloudWatch** — log shipping, GPU utilization metrics, idle alerts
+- **Kubernetes substrate** - GPU node lifecycle, platform services, networking, monitoring primitives
+- **NVIDIA GPU Operator** - GPU device/runtime enablement and health on the Kubernetes substrate
+- **Slurm** - researcher-facing job scheduling, GPU allocation, preemption handling, multi-node coordination
+- **PyTorch FSDP** - distributed training with full sharding, mixed precision
+- **vLLM** - production inference with continuous batching and PagedAttention
+- **Terraform** - instance provisioning, IAM, S3, CloudWatch, auto-provisioned with Deep Learning AMI
+- **CloudWatch** - log shipping, GPU utilization metrics, idle alerts
+
+## Architecture Direction
+
+This repo follows a NVIDIA-style layered model: Kubernetes is the infrastructure substrate, while Slurm remains the batch scheduler users interact with. Researchers submit jobs with normal Slurm commands; operators validate the Kubernetes and GPU Operator layer underneath.
+
+This is not a CoreWeave/SUNK-style unified scheduler. The default design does not allow general Kubernetes workloads to contend with Slurm jobs for the same GPUs. GPU capacity ownership must be explicit through node pools, partitions, labels, or reservations.
+
+See [docs/nvidia-style-slurm-on-kubernetes.md](docs/nvidia-style-slurm-on-kubernetes.md) for the architecture contract.
 
 ## Hardware
 
