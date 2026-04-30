@@ -1,14 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=fsdp-7b-multi
+#SBATCH --job-name=fsdp-train-multi
 #SBATCH --partition=gpu
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=4
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=12G
 #SBATCH --time=24:00:00
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=/tmp/train-%x-%j.out
+#SBATCH --error=/tmp/train-%x-%j.err
 #SBATCH --signal=B:SIGTERM@120
 #SBATCH --requeue
 #SBATCH --exclusive
@@ -17,50 +17,44 @@ set -euo pipefail
 
 echo "=== Multi-node job $SLURM_JOB_ID ==="
 echo "Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-echo "Nodes: $SLURM_NODELIST ($SLURM_NNODES)"
-echo "GPUs per node: $SLURM_GPUS_ON_NODE"
-echo "Total GPUs: $(($SLURM_NNODES * $SLURM_GPUS_ON_NODE))"
+echo "Nodes: $SLURM_NODELIST ($SLURM_NNODES x 1 GPU = 2 GPUs total)"
 
-# Resolve master addr from first node in allocation
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n1)
 MASTER_PORT=29500
-
 echo "Master: $MASTER_ADDR:$MASTER_PORT"
 
-# NCCL config for multi-node
-export NCCL_DEBUG=INFO
-export NCCL_DEBUG_SUBSYS=INIT,NET
+export NCCL_DEBUG=WARN
 export NCCL_SOCKET_IFNAME=eth0
-export NCCL_IB_DISABLE=0
-export NCCL_P2P_LEVEL=NVL
+export NCCL_IB_DISABLE=1
+export NCCL_P2P_LEVEL=SYS
 
-# Checkpoint dir
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-/root/ai-factory-control-plane/checkpoints/$SLURM_JOB_ID}"
-mkdir -p "$CHECKPOINT_DIR" logs
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-/tmp/checkpoints/$SLURM_JOB_ID}"
 
-source /opt/training-env/bin/activate
-
-srun --nodes="$SLURM_NNODES" --ntasks="$SLURM_NNODES" --ntasks-per-node=1 \
+srun --nodes=2 --ntasks=2 --ntasks-per-node=1 \
     bash -lc '
 set -euo pipefail
 
-echo "=== Worker node $(hostname) rank=$SLURM_PROCID local_rank=$SLURM_LOCALID ==="
-nvidia-smi --query-gpu=index,name,pcie.link.gen.current,memory.total --format=csv
-
-BAD_PCIE=$(nvidia-smi --query-gpu=index,pcie.link.gen.current --format=csv,noheader,nounits | awk -F", " '"'"'$2 < 3 {print $1}'"'"')
-if [ -n "$BAD_PCIE" ]; then
-    echo "FATAL: GPU(s) $BAD_PCIE have degraded PCIe link on $(hostname). Aborting."
-    exit 1
+REPO_DIR="$HOME/ai-factory-control-plane"
+if [ ! -d "$REPO_DIR" ]; then
+    git clone https://github.com/pixailabsonline/ai-factory-control-plane.git "$REPO_DIR"
+else
+    git -C "$REPO_DIR" pull --ff-only
 fi
+cd "$REPO_DIR"
+mkdir -p logs '"$CHECKPOINT_DIR"'
+
+source /opt/pytorch/bin/activate
+
+echo "Node $(hostname) rank=$SLURM_PROCID — GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
 
 torchrun \
-    --nproc_per_node=$SLURM_GPUS_ON_NODE \
-    --nnodes=$SLURM_NNODES \
+    --nproc_per_node=1 \
+    --nnodes=2 \
     --node_rank=$SLURM_PROCID \
     --master_addr='"$MASTER_ADDR"' \
     --master_port='"$MASTER_PORT"' \
     training/fsdp_trainer.py \
-    --model "'"${MODEL:-mistralai/Mistral-7B-v0.1}"'" \
+    --model "'"${MODEL:-gpt2-xl}"'" \
     --dataset "'"${DATASET:-wikitext/wikitext-103-raw-v1}"'" \
     --batch-size "'"${BATCH_SIZE:-2}"'" \
     --gradient-accumulation "'"${GRAD_ACCUM:-4}"'" \
@@ -69,7 +63,7 @@ torchrun \
     --checkpoint-every "'"${CKPT_EVERY:-500}"'" \
     --checkpoint-dir "'"$CHECKPOINT_DIR"'" \
     --sharding-strategy "'"${SHARD_STRATEGY:-FULL_SHARD}"'" \
-    2>&1 | tee "'"logs/training-$SLURM_JOB_ID-node"'"$SLURM_PROCID.log
+    2>&1 | tee "logs/training-$SLURM_JOB_ID-node$SLURM_PROCID.log"
 '
 
 echo "=== Multi-node job complete: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="

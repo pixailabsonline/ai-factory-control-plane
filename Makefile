@@ -11,7 +11,7 @@ train-smoke:
 	sbatch slurm/train-smoke.sbatch
 
 train-multi:
-	sbatch slurm/train-multi-node.sbatch
+	sbatch --export=ALL,MAX_STEPS=$(MAX_STEPS),CKPT_EVERY=$(CKPT_EVERY) slurm/train-multi-node.sbatch
 
 profile:
 	sbatch slurm/profile.sbatch
