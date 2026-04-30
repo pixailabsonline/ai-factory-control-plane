@@ -55,7 +55,7 @@ torchrun \
     --master_port='"$MASTER_PORT"' \
     training/fsdp_trainer.py \
     --model "'"${MODEL:-gpt2-xl}"'" \
-    --dataset "'"${DATASET:-wikitext/wikitext-103-raw-v1}"'" \
+    --dataset "'"${DATASET:-wikitext/wikitext-2-raw-v1}"'" \
     --batch-size "'"${BATCH_SIZE:-2}"'" \
     --gradient-accumulation "'"${GRAD_ACCUM:-4}"'" \
     --lr "'"${LR:-2e-5}"'" \

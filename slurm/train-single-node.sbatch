@@ -42,8 +42,8 @@ torchrun \
     --nproc_per_node=1 \
     --nnodes=1 \
     training/fsdp_trainer.py \
-    --model "${MODEL:-distilgpt2}" \
-    --dataset "${DATASET:-wikitext/wikitext-103-raw-v1}" \
+    --model "${MODEL:-gpt2-xl}" \
+    --dataset "${DATASET:-wikitext/wikitext-2-raw-v1}" \
     --batch-size "${BATCH_SIZE:-2}" \
     --gradient-accumulation "${GRAD_ACCUM:-8}" \
     --lr "${LR:-2e-5}" \

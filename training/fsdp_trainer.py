@@ -140,7 +140,8 @@ def prepare_dataset(tokenizer, dataset_name, max_length=512, split="train", smok
     if smoke_test:
         return SyntheticCausalLMDataset(size=64, max_length=max_length)
 
-    dataset = load_dataset(dataset_name, split=split)
+    parts = dataset_name.split("/", 1)
+    dataset = load_dataset(*parts, split=split) if len(parts) == 2 else load_dataset(dataset_name, split=split)
 
     def tokenize(examples):
         return tokenizer(
@@ -324,8 +325,8 @@ def train(args):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="mistralai/Mistral-7B-v0.1")
-    parser.add_argument("--dataset", default="wikitext/wikitext-103-raw-v1")
+    parser.add_argument("--model", default="gpt2-xl")
+    parser.add_argument("--dataset", default="wikitext/wikitext-2-raw-v1")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--gradient-accumulation", type=int, default=8)
     parser.add_argument("--lr", type=float, default=2e-5)
