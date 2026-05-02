@@ -97,11 +97,13 @@ class AsyncCheckpointWriter:
                 shutil.rmtree(final_dir)
             staging_dir.rename(final_dir)
             self._cleanup_old_checkpoints()
-            if self.s3_bucket:
-                self._sync_to_s3(final_dir, step)
             print(f"[checkpoint] Saved sharded checkpoint step {step} → {final_dir}")
 
         self._barrier()
+
+        # Every rank uploads its own files — DCP shards are rank-local
+        if self.s3_bucket:
+            self._sync_rank_to_s3(final_dir, step, rank)
 
     def _restore_sharded(self, model, optimizer, scheduler, path):
         import torch.distributed.checkpoint as dist_cp
@@ -281,6 +283,7 @@ class AsyncCheckpointWriter:
         return (self.s3_prefix or "checkpoints").strip("/")
 
     def _sync_to_s3(self, checkpoint_dir, step):
+        """Upload all files in checkpoint_dir to S3 (used by non-FSDP full saves)."""
         try:
             import boto3
             s3 = boto3.client("s3")
@@ -292,6 +295,34 @@ class AsyncCheckpointWriter:
                     s3.upload_file(str(file_path), self.s3_bucket, s3_key)
         except Exception as e:
             print(f"[checkpoint] S3 sync failed for step {step}: {e}")
+
+    def _sync_rank_to_s3(self, checkpoint_dir, step, rank):
+        """Each rank uploads only its own files — avoids cross-rank I/O for sharded saves."""
+        try:
+            import boto3
+            s3 = boto3.client("s3")
+            prefix = self._s3_prefix_value()
+            # Rank 0 owns: model/ (DCP writes all shards there), train_state.pt, meta.json
+            # Every rank owns: optim-rank-{rank}/
+            # We let rank 0 upload shared files; every rank uploads its own optim shard.
+            upload_dirs = [checkpoint_dir / f"optim-rank-{rank}"]
+            if rank == 0:
+                upload_dirs += [
+                    checkpoint_dir / "model",
+                    checkpoint_dir,  # train_state.pt and meta.json at root
+                ]
+            for base in upload_dirs:
+                if not base.exists():
+                    continue
+                for file_path in (base.rglob("*") if base.is_dir() else [base]):
+                    if not file_path.is_file():
+                        continue
+                    rel = file_path.relative_to(checkpoint_dir)
+                    s3_key = f"{prefix}/checkpoint-{step}/{rel}"
+                    s3.upload_file(str(file_path), self.s3_bucket, s3_key)
+            print(f"[checkpoint] rank {rank} S3 sync done for step {step}")
+        except Exception as e:
+            print(f"[checkpoint] rank {rank} S3 sync failed for step {step}: {e}")
 
     # ------------------------------------------------------------------
     # Distributed helpers
