@@ -219,8 +219,9 @@ def train(args):
 
     # Restore from latest checkpoint if available
     global_step = ckpt_writer.restore(model, optimizer, scheduler, local_rank)
-    if rank == 0 and global_step > 0:
-        print(f"Resumed from step {global_step}")
+    resumed_from_step = global_step
+    if rank == 0 and resumed_from_step > 0:
+        print(f"Resumed from step {resumed_from_step}")
 
     metrics_log = []
     start_time = time.time()
@@ -330,6 +331,7 @@ def train(args):
             json.dump({
                 "config": vars(args),
                 "world_size": world_size,
+                "resumed_from_step": resumed_from_step,
                 "total_steps": global_step,
                 "total_tokens": tokens_processed,
                 "total_time_sec": elapsed,

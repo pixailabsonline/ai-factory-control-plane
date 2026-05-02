@@ -35,7 +35,7 @@ The commercial claim this repo is aiming at is:
 
 > lower cost per useful GPU hour
 
-The buyer-facing metrics are the ones that support that claim directly:
+The commercial metrics are the ones that support that claim directly:
 
 | Metric | What it means | Status |
 |---|---|---|
@@ -70,6 +70,21 @@ Best next experiment:
 5. Serve the published artifact with vLLM.
 6. Put the numbers into a commercial summary table.
 
+See [docs/commercial-experiment-plan.md](docs/commercial-experiment-plan.md) for the exact baseline/recovery sequence.
+
+You can generate that table from artifacts with:
+
+```bash
+make commercial-report \
+  RUN_ROOT=/path/to/run-root \
+  BASELINE_RUN_ROOT=/path/to/baseline-run-root \
+  INSTANCE_TYPE=g5.xlarge \
+  GPUS_PER_NODE=1 \
+  OUTPUT=commercial-summary.md
+```
+
+The interruption/restart path is automated by `make commercial-recovery`. `make commercial-baseline` gives you the plain comparison run on the same model class and cluster shape so you can compute the delta cleanly.
+
 ## Usage
 
 ```bash
@@ -93,6 +108,8 @@ make train-smoke                   # 1 GPU smoke test for the training loop
 make train-recovery                # checkpoint write + resume test
 make train                          # single-node training on the current GPU node
 make train-multi                    # 2-node training on current GPU nodes, default gpt2-medium
+make commercial-baseline            # plain comparison run for commercial metrics
+make commercial-recovery            # automated interruption + resume run for commercial metrics
 
 # Monitor
 make jobs                           # squeue

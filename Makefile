@@ -1,9 +1,20 @@
-.PHONY: train train-smoke train-recovery profile scaling eval export-model publish-model serve bench infra-init infra-plan infra-up infra-down cost-check jobs gpu-status substrate-status slurm-status platform-status logs
+.PHONY: train train-smoke train-recovery profile scaling eval export-model publish-model commercial-baseline commercial-recovery commercial-report serve bench infra-init infra-plan infra-up infra-down cost-check jobs gpu-status substrate-status slurm-status platform-status logs
 
 S3_BUCKET ?= ai-factory-checkpoints-737213639346
 MODEL_NAME ?= gpt2-medium
 S3_RUN_KEY ?= runs/$(MODEL_NAME)
 S3_RUN_ROOT ?= s3://$(S3_BUCKET)/$(S3_RUN_KEY)
+INSTANCE_TYPE ?= g5.xlarge
+GPUS_PER_NODE ?= 1
+OUTPUT ?= commercial-summary.md
+COMMERCIAL_MODEL ?= gpt2-medium
+COMMERCIAL_MAX_STEPS ?= 1000
+COMMERCIAL_CKPT_EVERY ?= 100
+COMMERCIAL_S3_RUN_KEY ?= runs/$(COMMERCIAL_MODEL)/baseline
+COMMERCIAL_S3_RUN_ROOT ?= s3://$(S3_BUCKET)/$(COMMERCIAL_S3_RUN_KEY)
+COMMERCIAL_RECOVERY_S3_RUN_KEY ?= runs/$(COMMERCIAL_MODEL)/recovery
+COMMERCIAL_RECOVERY_S3_RUN_ROOT ?= s3://$(S3_BUCKET)/$(COMMERCIAL_RECOVERY_S3_RUN_KEY)
+COMMERCIAL_STOP_AFTER_STEP ?= 200
 
 SSH_CIDR ?= 127.0.0.1/32
 
@@ -20,6 +31,12 @@ train-recovery:
 
 train-multi:
 	sbatch --export=ALL,MAX_STEPS=$(MAX_STEPS),CKPT_EVERY=$(CKPT_EVERY) slurm/train-multi-node.sbatch
+
+commercial-baseline:
+	sbatch --export=ALL,MODEL=$(COMMERCIAL_MODEL),MAX_STEPS=$(COMMERCIAL_MAX_STEPS),CKPT_EVERY=$(COMMERCIAL_CKPT_EVERY),S3_RUN_KEY=$(COMMERCIAL_S3_RUN_KEY),S3_RUN_ROOT=$(COMMERCIAL_S3_RUN_ROOT) slurm/train-multi-node.sbatch
+
+commercial-recovery:
+	sbatch --export=ALL,MODEL=$(COMMERCIAL_MODEL),MAX_STEPS=$(COMMERCIAL_MAX_STEPS),CKPT_EVERY=$(COMMERCIAL_CKPT_EVERY),STOP_AFTER_STEP=$(COMMERCIAL_STOP_AFTER_STEP),S3_RUN_KEY=$(COMMERCIAL_RECOVERY_S3_RUN_KEY),S3_RUN_ROOT=$(COMMERCIAL_RECOVERY_S3_RUN_ROOT) slurm/commercial-recovery.sbatch
 
 profile:
 	sbatch slurm/profile.sbatch
@@ -47,6 +64,22 @@ publish-model:
 		$$S3_FLAG \
 		$(if $(MODEL),--model "$(MODEL)",) \
 		$(if $(TOKENIZER),--tokenizer "$(TOKENIZER)",)
+
+commercial-report:
+	@test -n "$(RUN_ROOT)$(TRAINING_METRICS)" || (echo "RUN_ROOT or TRAINING_METRICS is required" && exit 1)
+	source /opt/training-env/bin/activate && python training/commercial_report.py \
+		$(if $(RUN_ROOT),--run-root "$(RUN_ROOT)",--training-metrics "$(TRAINING_METRICS)") \
+		$(if $(EVAL_RESULT),--eval-result "$(EVAL_RESULT)",) \
+		$(if $(EXPORT_MANIFEST),--export-manifest "$(EXPORT_MANIFEST)",) \
+		--instance-type "$(INSTANCE_TYPE)" \
+		--gpus-per-node "$(GPUS_PER_NODE)" \
+		$(if $(RUN_NAME),--run-name "$(RUN_NAME)",) \
+		$(if $(BASELINE_RUN_ROOT),--baseline-run-root "$(BASELINE_RUN_ROOT)",) \
+		$(if $(BASELINE_TRAINING_METRICS),--baseline-training-metrics "$(BASELINE_TRAINING_METRICS)",) \
+		$(if $(BASELINE_EVAL_RESULT),--baseline-eval-result "$(BASELINE_EVAL_RESULT)",) \
+		$(if $(BASELINE_EXPORT_MANIFEST),--baseline-export-manifest "$(BASELINE_EXPORT_MANIFEST)",) \
+		--output "$(OUTPUT)" \
+		$(if $(JSON_OUTPUT),--json-output "$(JSON_OUTPUT)",)
 
 serve:
 	@opts="--export=ALL,MODEL=$(MODEL),MODEL_DIR=$(MODEL_DIR),MODEL_S3_URI=$(MODEL_S3_URI),MODEL_S3_ROOT=$(MODEL_S3_ROOT),CHECKPOINT=$(CHECKPOINT),TOKENIZER=$(TOKENIZER),EXPORT_DIR=$(EXPORT_DIR),PORT=$(PORT),TP=$(TP)"; \
