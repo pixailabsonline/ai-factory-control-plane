@@ -55,3 +55,25 @@ ENV_EOF
 
 git clone https://github.com/pixailabsonline/ai-factory-control-plane.git \
     /root/ai-factory-control-plane 2>/dev/null || true
+
+# --- Mount FSx Lustre if DNS name is present in instance tags ---
+LUSTRE_DNS=$(aws ec2 describe-tags \
+  --filters "Name=resource-id,Values=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)" \
+            "Name=key,Values=LustreDns" \
+  --query "Tags[0].Value" --output text 2>/dev/null || echo "")
+
+LUSTRE_MOUNT=$(aws ec2 describe-tags \
+  --filters "Name=resource-id,Values=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)" \
+            "Name=key,Values=LustreMountName" \
+  --query "Tags[0].Value" --output text 2>/dev/null || echo "")
+
+if [ -n "$LUSTRE_DNS" ] && [ "$LUSTRE_DNS" != "None" ]; then
+  apt-get install -y lustre-client-modules-$(uname -r) lustre-utils 2>/dev/null || \
+    apt-get install -y lustre-client-modules lustre-utils 2>/dev/null || true
+  mkdir -p /mnt/lustre
+  mount -t lustre "${LUSTRE_DNS}@tcp:/${LUSTRE_MOUNT}" /mnt/lustre
+  echo "${LUSTRE_DNS}@tcp:/${LUSTRE_MOUNT} /mnt/lustre lustre defaults,_netdev 0 0" >> /etc/fstab
+  mkdir -p /mnt/lustre/checkpoints /mnt/lustre/datasets /mnt/lustre/logs
+  chmod 1777 /mnt/lustre/checkpoints /mnt/lustre/datasets /mnt/lustre/logs
+  echo "Lustre mounted at /mnt/lustre"
+fi

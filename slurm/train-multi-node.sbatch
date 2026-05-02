@@ -20,13 +20,21 @@ MODEL_NAME="${MODEL:-gpt2-medium}"
 S3_RUN_KEY="${S3_RUN_KEY:-runs/$MODEL_NAME}"
 S3_RUN_ROOT="${S3_RUN_ROOT:-s3://$S3_BUCKET/$S3_RUN_KEY}"
 
-# Persistent across reboots, shared across all jobs for this model
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-$HOME/checkpoints/$MODEL_NAME}"
+# Use Lustre if mounted, otherwise fall back to $HOME (persistent on EBS)
+if mountpoint -q /mnt/lustre 2>/dev/null; then
+    CHECKPOINT_DIR="${CHECKPOINT_DIR:-/mnt/lustre/checkpoints/$MODEL_NAME}"
+    LOG_DIR="/mnt/lustre/logs"
+    USE_LUSTRE=true
+else
+    CHECKPOINT_DIR="${CHECKPOINT_DIR:-$HOME/checkpoints/$MODEL_NAME}"
+    LOG_DIR="$HOME/ai-factory-control-plane/logs"
+    USE_LUSTRE=false
+fi
 
 echo "=== Multi-node job $SLURM_JOB_ID ==="
 echo "Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "Nodes: $SLURM_NODELIST ($SLURM_NNODES x 1 GPU = 2 GPUs total)"
-echo "Checkpoints: $CHECKPOINT_DIR (S3: $S3_RUN_ROOT/checkpoints)"
+echo "Checkpoints: $CHECKPOINT_DIR (Lustre: $USE_LUSTRE)"
 
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n1)
 MASTER_PORT=29500
@@ -53,11 +61,17 @@ else
     git -C "$REPO_DIR" pull --ff-only
 fi
 cd "$REPO_DIR"
-mkdir -p logs '"$CHECKPOINT_DIR"'
+mkdir -p '"$LOG_DIR"' '"$CHECKPOINT_DIR"'
 
 source /opt/pytorch/bin/activate
 
 echo "Node $(hostname) rank=$SLURM_PROCID — GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
+
+# Only pass S3 args when not on Lustre — on Lustre the shared fs is the source of truth
+S3_ARGS=""
+if [ "'"$USE_LUSTRE"'" != "true" ]; then
+    S3_ARGS="--s3-bucket '"$S3_BUCKET"' --s3-prefix '"$S3_RUN_KEY"'/checkpoints"
+fi
 
 torchrun \
     --nproc_per_node=1 \
@@ -75,10 +89,9 @@ torchrun \
     --max-steps    "'"${MAX_STEPS:-5000}"'" \
     --checkpoint-every "'"${CKPT_EVERY:-500}"'" \
     --checkpoint-dir   "'"$CHECKPOINT_DIR"'" \
-    --s3-bucket    "'"$S3_BUCKET"'" \
-    --s3-prefix    "$S3_RUN_KEY/checkpoints" \
+    $S3_ARGS \
     --sharding-strategy "'"${SHARD_STRATEGY:-FULL_SHARD}"'" \
-    2>&1 | tee "logs/training-$SLURM_JOB_ID-node$SLURM_PROCID.log"
+    2>&1 | tee "'"$LOG_DIR"'/training-$SLURM_JOB_ID-node$SLURM_PROCID.log"
 '
 
 echo "=== Training complete: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="

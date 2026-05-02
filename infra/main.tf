@@ -383,12 +383,75 @@ resource "aws_instance" "training" {
   monitoring    = true
 
   tags = {
-    Name          = "ai-factory-training-${count.index}"
-    Role          = count.index == 0 ? "master" : "worker"
-    NodeIndex     = tostring(count.index)
-    ClusterSize   = tostring(local.instance_count)
-    CapacityOwner = "slurm-batch"
-    SlurmPool     = "gpu"
-    Phase         = var.multi_node ? "2-multi-node" : "1-single-node"
+    Name            = "ai-factory-training-${count.index}"
+    Role            = count.index == 0 ? "master" : "worker"
+    NodeIndex       = tostring(count.index)
+    ClusterSize     = tostring(local.instance_count)
+    CapacityOwner   = "slurm-batch"
+    SlurmPool       = "gpu"
+    Phase           = var.multi_node ? "2-multi-node" : "1-single-node"
+    LustreDns       = var.lustre_enabled ? aws_fsx_lustre_file_system.training[0].dns_name : ""
+    LustreMountName = var.lustre_enabled ? aws_fsx_lustre_file_system.training[0].mount_name : ""
   }
+}
+
+# --- FSx Lustre shared filesystem ---
+# All nodes mount at /mnt/lustre — checkpoints, datasets, logs live here.
+# No per-rank S3 uploads needed; eval reads directly from the shared path.
+
+resource "aws_fsx_lustre_file_system" "training" {
+  count = var.lustre_enabled ? 1 : 0
+
+  storage_capacity            = var.lustre_storage_gb
+  subnet_ids                  = [data.aws_subnets.gpu_capable.ids[0]]
+  security_group_ids          = [aws_security_group.training.id, aws_security_group.lustre[0].id]
+  deployment_type             = "SCRATCH_2"
+  per_unit_storage_throughput = 200
+
+  tags = {
+    Name = "ai-factory-lustre"
+  }
+}
+
+resource "aws_security_group" "lustre" {
+  count       = var.lustre_enabled ? 1 : 0
+  name        = "ai-factory-lustre"
+  description = "FSx Lustre — Lustre traffic between instances and FSx endpoint"
+  vpc_id      = data.aws_subnets.gpu_capable.ids[0] != "" ? data.aws_vpc.selected[0].id : null
+
+  ingress {
+    from_port       = 988
+    to_port         = 988
+    protocol        = "tcp"
+    security_groups = [aws_security_group.training.id]
+  }
+
+  ingress {
+    from_port       = 1018
+    to_port         = 1023
+    protocol        = "tcp"
+    security_groups = [aws_security_group.training.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+data "aws_vpc" "selected" {
+  count   = var.lustre_enabled ? 1 : 0
+  default = true
+}
+
+output "lustre_dns" {
+  value       = var.lustre_enabled ? aws_fsx_lustre_file_system.training[0].dns_name : ""
+  description = "FSx Lustre DNS name — use as mount source on all nodes."
+}
+
+output "lustre_mount_name" {
+  value       = var.lustre_enabled ? aws_fsx_lustre_file_system.training[0].mount_name : ""
+  description = "FSx Lustre mount name — needed for the mount command."
 }

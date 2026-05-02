@@ -29,6 +29,47 @@ Tested on:
 - **Single-node:** p3.8xlarge (4x V100 16GB, NVLink 300 GB/s)
 - **Multi-node:** 2x p3.8xlarge (8x V100 across nodes)
 
+## Commercial Metrics
+
+The commercial claim this repo is aiming at is:
+
+> lower cost per useful GPU hour
+
+The buyer-facing metrics are the ones that support that claim directly:
+
+| Metric | What it means | Status |
+|---|---|---|
+| GPU hours to passing checkpoint | How much GPU time it takes to produce a usable model | Needs a baseline comparison run |
+| Recovery time after failure | How long it takes to resume instead of restart | Proven in the recovery path, not yet benchmarked as a delta |
+| Tokens/sec | Training throughput on the same hardware | Measured in the live runs |
+| Time from checkpoint to serveable artifact | How long it takes to promote a trained checkpoint for inference | Implemented, needs one end-to-end benchmarked run |
+| Runs salvaged without restart | How many interrupted runs resumed from checkpoint successfully | Proven in the live runs |
+| Cost per trained model | GPU spend required to get a passing model | Needs a baseline comparison run |
+
+Current proof runs recorded in the repo:
+
+- Smoke training on 1x A10G
+- Single-node training on 1x A10G with `distilgpt2`
+- Multi-node FSDP training on 2x A10G with `gpt2-medium`
+- Checkpoint recovery run with stop-and-resume
+- Eval gate that loads a checkpoint and passes or fails it
+
+What is still missing for the commercial story:
+
+- A baseline run with no recovery or promotion flow
+- A before/after measurement of wasted GPU hours
+- One clean train → eval → publish → serve run tied to the same artifact
+- A customer or real workload using the platform
+
+Best next experiment:
+
+1. Run the baseline path.
+2. Run the recovery path on the same model and hardware.
+3. Record GPU hours, recovery time, and time to passing checkpoint.
+4. Publish the passing checkpoint to S3.
+5. Serve the published artifact with vLLM.
+6. Put the numbers into a commercial summary table.
+
 ## Usage
 
 ```bash

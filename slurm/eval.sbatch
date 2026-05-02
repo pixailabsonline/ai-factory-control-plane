@@ -18,8 +18,6 @@ S3_RUN_KEY="${S3_RUN_KEY:-runs/$MODEL_NAME}"
 S3_RUN_ROOT="${S3_RUN_ROOT:-s3://$S3_BUCKET/$S3_RUN_KEY}"
 S3_CHECKPOINTS_URI="$S3_RUN_ROOT/checkpoints"
 
-echo "=== Eval gate: $S3_CHECKPOINTS_URI ==="
-
 REPO_DIR="$HOME/ai-factory-control-plane"
 if [ ! -d "$REPO_DIR" ]; then
     git clone https://github.com/pixailabsonline/ai-factory-control-plane.git "$REPO_DIR"
@@ -31,23 +29,41 @@ mkdir -p eval/results
 
 source /opt/pytorch/bin/activate
 
-# Find the latest checkpoint-N in S3 and download it
-LATEST_STEP=$(aws s3 ls "$S3_CHECKPOINTS_URI/" \
-    | awk '{print $2}' \
-    | grep 'checkpoint-' \
-    | sed 's|checkpoint-||;s|/||' \
-    | sort -n \
-    | tail -1)
+# On Lustre: read checkpoint directly — no download needed
+# Without Lustre: pull latest from S3
+if mountpoint -q /mnt/lustre 2>/dev/null; then
+    LUSTRE_CKPT_DIR="/mnt/lustre/checkpoints/$MODEL_NAME"
+    LATEST_STEP=$(ls "$LUSTRE_CKPT_DIR" 2>/dev/null \
+        | grep '^checkpoint-' | sed 's/checkpoint-//' | sort -n | tail -1)
 
-if [ -z "$LATEST_STEP" ]; then
-    echo "No checkpoints found at $S3_CHECKPOINTS_URI/ — aborting"
-    exit 1
+    if [ -z "$LATEST_STEP" ]; then
+        echo "No checkpoints found at $LUSTRE_CKPT_DIR — aborting"
+        exit 1
+    fi
+
+    LOCAL_CKPT="$LUSTRE_CKPT_DIR/checkpoint-$LATEST_STEP"
+    echo "=== Eval gate (Lustre): $LOCAL_CKPT ==="
+else
+    echo "=== Eval gate (S3): $S3_CHECKPOINTS_URI ==="
+
+    LATEST_STEP=$(aws s3 ls "$S3_CHECKPOINTS_URI/" \
+        | awk '{print $2}' \
+        | grep 'checkpoint-' \
+        | sed 's|checkpoint-||;s|/||' \
+        | sort -n \
+        | tail -1)
+
+    if [ -z "$LATEST_STEP" ]; then
+        echo "No checkpoints found at $S3_CHECKPOINTS_URI/ — aborting"
+        exit 1
+    fi
+
+    LOCAL_CKPT="/tmp/eval-ckpt-$SLURM_JOB_ID/checkpoint-$LATEST_STEP"
+    mkdir -p "$LOCAL_CKPT"
+    aws s3 sync "$S3_CHECKPOINTS_URI/checkpoint-$LATEST_STEP/" "$LOCAL_CKPT/"
 fi
 
-echo "Latest checkpoint: step $LATEST_STEP"
-LOCAL_CKPT="/tmp/eval-ckpt-$SLURM_JOB_ID/checkpoint-$LATEST_STEP"
-mkdir -p "$LOCAL_CKPT"
-aws s3 sync "$S3_CHECKPOINTS_URI/checkpoint-$LATEST_STEP/" "$LOCAL_CKPT/"
+echo "Evaluating step $LATEST_STEP"
 
 python eval/quality_gate.py \
     --checkpoint "$LOCAL_CKPT" \
@@ -55,7 +71,11 @@ python eval/quality_gate.py \
     --output "eval/results/eval-$SLURM_JOB_ID.json"
 
 EXIT=$?
-rm -rf "/tmp/eval-ckpt-$SLURM_JOB_ID"
+
+# Only clean up if we downloaded from S3
+if ! mountpoint -q /mnt/lustre 2>/dev/null; then
+    rm -rf "/tmp/eval-ckpt-$SLURM_JOB_ID"
+fi
 
 if [ $EXIT -eq 0 ]; then
     echo "PASS — checkpoint step $LATEST_STEP promoted"

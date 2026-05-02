@@ -50,3 +50,15 @@ variable "alert_sns_arn" {
   type        = string
   default     = ""
 }
+
+variable "lustre_enabled" {
+  description = "Create FSx Lustre shared filesystem for checkpoints and training data."
+  type        = bool
+  default     = false
+}
+
+variable "lustre_storage_gb" {
+  description = "FSx Lustre storage capacity in GB (must be multiple of 1200)."
+  type        = number
+  default     = 1200
+}
