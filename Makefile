@@ -1,4 +1,4 @@
-.PHONY: train train-smoke train-recovery profile scaling eval export-model publish-model commercial-baseline commercial-recovery commercial-report serve bench infra-init infra-plan infra-up infra-down cost-check jobs gpu-status substrate-status slurm-status platform-status logs
+.PHONY: train train-smoke train-recovery profile scaling eval export-model publish-model commercial-baseline commercial-recovery commercial-report serve bench infra-init infra-plan infra-up infra-down cost-check jobs gpu-status substrate-status slurm-status platform-status logs data-pipeline data-pipeline-smoke
 
 S3_BUCKET ?= ai-factory-checkpoints-737213639346
 MODEL_NAME ?= gpt2-medium
@@ -137,3 +137,18 @@ platform-status: substrate-status slurm-status
 
 logs:
 	ls -lt logs/ | head -20
+
+# Data pipeline targets
+# CC_CRAWL, CC_LIMIT, TOKENIZER, MAX_LENGTH, DATASET_VER, RUN_NAME can all be overridden
+CC_CRAWL    ?= CC-MAIN-2024-10
+CC_LIMIT    ?= 0
+TOKENIZER   ?= gpt2
+MAX_LENGTH  ?= 1024
+DATASET_VER ?= v1
+RUN_NAME    ?= pipeline-$(CC_CRAWL)-$(DATASET_VER)
+
+data-pipeline:
+	sbatch --export=ALL,S3_BUCKET=$(S3_BUCKET),RUN_NAME=$(RUN_NAME),CC_CRAWL=$(CC_CRAWL),CC_LIMIT=$(CC_LIMIT),TOKENIZER=$(TOKENIZER),MAX_LENGTH=$(MAX_LENGTH),DATASET_VER=$(DATASET_VER) slurm/data-pipeline.sbatch
+
+data-pipeline-smoke:
+	$(MAKE) data-pipeline CC_LIMIT=5 RUN_NAME=smoke-$(CC_CRAWL)-$(shell date +%Y%m%d)
