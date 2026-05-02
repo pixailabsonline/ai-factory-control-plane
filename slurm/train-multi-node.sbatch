@@ -15,10 +15,10 @@
 
 set -euo pipefail
 
-S3_BUCKET="${S3_BUCKET:-ai-factory-checkpoints-737213639346}"
-MODEL_NAME="${MODEL:-gpt2-medium}"
-S3_RUN_KEY="${S3_RUN_KEY:-runs/$MODEL_NAME}"
-S3_RUN_ROOT="${S3_RUN_ROOT:-s3://$S3_BUCKET/$S3_RUN_KEY}"
+export S3_BUCKET="${S3_BUCKET:-ai-factory-checkpoints-737213639346}"
+export MODEL_NAME="${MODEL:-gpt2-medium}"
+export S3_RUN_KEY="${S3_RUN_KEY:-runs/$MODEL_NAME}"
+export S3_RUN_ROOT="${S3_RUN_ROOT:-s3://$S3_BUCKET/$S3_RUN_KEY}"
 
 # Lustre = fast shared scratch during the run (all nodes see the same path, no cross-node copies)
 # S3    = durable store — always written regardless of Lustre, survives instance termination
