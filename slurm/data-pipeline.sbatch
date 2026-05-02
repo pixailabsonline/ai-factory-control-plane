@@ -3,8 +3,8 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=12G
 #SBATCH --time=12:00:00
 #SBATCH --output=/tmp/data-pipeline-%x-%j.out
 #SBATCH --error=/tmp/data-pipeline-%x-%j.err
