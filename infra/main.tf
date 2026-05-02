@@ -396,28 +396,21 @@ resource "aws_instance" "training" {
 }
 
 # --- FSx Lustre shared filesystem ---
-# All nodes mount at /mnt/lustre — checkpoints, datasets, logs live here.
-# No per-rank S3 uploads needed; eval reads directly from the shared path.
+# SCRATCH_2: high-throughput shared scratch visible to all nodes during a run.
+# Not durable — AWS may lose data on hardware failure. Not a replacement for S3.
+# Role: fast shared workspace so all nodes read/write checkpoints locally without
+#       cross-node copies. S3 remains the durable store; trainer always syncs there too.
 
-resource "aws_fsx_lustre_file_system" "training" {
+data "aws_subnet" "gpu" {
   count = var.lustre_enabled ? 1 : 0
-
-  storage_capacity            = var.lustre_storage_gb
-  subnet_ids                  = [data.aws_subnets.gpu_capable.ids[0]]
-  security_group_ids          = [aws_security_group.training.id, aws_security_group.lustre[0].id]
-  deployment_type             = "SCRATCH_2"
-  per_unit_storage_throughput = 200
-
-  tags = {
-    Name = "ai-factory-lustre"
-  }
+  id    = data.aws_subnets.gpu_capable.ids[0]
 }
 
 resource "aws_security_group" "lustre" {
   count       = var.lustre_enabled ? 1 : 0
   name        = "ai-factory-lustre"
-  description = "FSx Lustre — Lustre traffic between instances and FSx endpoint"
-  vpc_id      = data.aws_subnets.gpu_capable.ids[0] != "" ? data.aws_vpc.selected[0].id : null
+  description = "FSx Lustre — Lustre client traffic between instances and FSx endpoint"
+  vpc_id      = data.aws_subnet.gpu[0].vpc_id
 
   ingress {
     from_port       = 988
@@ -441,9 +434,18 @@ resource "aws_security_group" "lustre" {
   }
 }
 
-data "aws_vpc" "selected" {
-  count   = var.lustre_enabled ? 1 : 0
-  default = true
+resource "aws_fsx_lustre_file_system" "training" {
+  count = var.lustre_enabled ? 1 : 0
+
+  storage_capacity            = var.lustre_storage_gb
+  subnet_ids                  = [data.aws_subnets.gpu_capable.ids[0]]
+  security_group_ids          = [aws_security_group.training.id, aws_security_group.lustre[0].id]
+  deployment_type             = "SCRATCH_2"
+  per_unit_storage_throughput = 200
+
+  tags = {
+    Name = "ai-factory-lustre"
+  }
 }
 
 output "lustre_dns" {
