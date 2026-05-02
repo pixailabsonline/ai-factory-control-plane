@@ -48,32 +48,28 @@ class AsyncCheckpointWriter:
     def _save_sharded(self, model, optimizer, scheduler, step, metrics, rank, model_name):
         import torch.distributed.checkpoint as dist_cp
 
-        staging_dir = self.base_dir / f".staging-{step}"
+        # Each rank writes directly into the final dir — no staging/rename dance.
+        # Staging only makes sense on a single node; across nodes each rank has its
+        # own local disk so the rename on rank 0 is invisible to rank 1.
         final_dir = self.base_dir / f"checkpoint-{step}"
+        final_dir.mkdir(parents=True, exist_ok=True)
 
-        # Rank 0 clears any stale staging dir; barrier before any rank creates dirs
-        if rank == 0 and staging_dir.exists():
-            shutil.rmtree(staging_dir)
-        self._barrier()
-        staging_dir.mkdir(parents=True, exist_ok=True)
-
-        # 1. Model — sharded save via DCP, purely local I/O on each rank
-        model_dir = staging_dir / "model"
+        # 1. Model — DCP writes each rank's shard to model/ with no cross-rank I/O
+        model_dir = final_dir / "model"
         model_dir.mkdir(exist_ok=True)
         with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT):
             model_sd = model.state_dict()
         dist_cp.save({"model": model_sd}, storage_writer=dist_cp.FileSystemWriter(str(model_dir)))
 
-        # 2. Optimizer — each rank saves its own flat-param states directly,
-        #    no FSDP wrapper so no collective ops
-        optim_dir = staging_dir / f"optim-rank-{rank}"
+        # 2. Optimizer — each rank saves its own shard locally
+        optim_dir = final_dir / f"optim-rank-{rank}"
         optim_dir.mkdir(exist_ok=True)
         torch.save(optimizer.state_dict(), optim_dir / "optim.pt")
 
-        # 3. All ranks barrier — everyone has finished writing their shards
+        # 3. All ranks barrier — everyone has finished writing
         self._barrier()
 
-        # 4. Rank 0 writes scheduler + metadata and atomically promotes staging → final
+        # 4. Rank 0 writes shared metadata
         if rank == 0:
             torch.save({
                 "scheduler": scheduler.state_dict(),
@@ -83,9 +79,9 @@ class AsyncCheckpointWriter:
                 "model_name": model_name,
                 "world_size": self._world_size(),
                 "sharded": True,
-            }, staging_dir / "train_state.pt")
+            }, final_dir / "train_state.pt")
 
-            with open(staging_dir / "meta.json", "w") as f:
+            with open(final_dir / "meta.json", "w") as f:
                 json.dump({
                     "step": step,
                     "sharded": True,
@@ -93,15 +89,12 @@ class AsyncCheckpointWriter:
                     "timestamp": datetime.now().isoformat(),
                 }, f, indent=2)
 
-            if final_dir.exists():
-                shutil.rmtree(final_dir)
-            staging_dir.rename(final_dir)
             self._cleanup_old_checkpoints()
             print(f"[checkpoint] Saved sharded checkpoint step {step} → {final_dir}")
 
         self._barrier()
 
-        # Every rank uploads its own files — DCP shards are rank-local
+        # Every rank uploads its own files to S3
         if self.s3_bucket:
             self._sync_rank_to_s3(final_dir, step, rank)
 
