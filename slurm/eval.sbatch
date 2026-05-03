@@ -79,6 +79,33 @@ fi
 
 if [ $EXIT -eq 0 ]; then
     echo "PASS — checkpoint step $LATEST_STEP promoted"
+
+    # If this was recovery2, auto-submit baseline2 training
+    if [ "${S3_RUN_KEY:-}" = "runs/gpt2-medium/recovery2" ]; then
+        REPO_DIR="$HOME/ai-factory-control-plane"
+        BASELINE2_JOB=$(sbatch --parsable \
+            --export=ALL,MODEL=gpt2-medium,MAX_STEPS=1000,CKPT_EVERY=100,S3_RUN_KEY=runs/gpt2-medium/baseline2,S3_RUN_ROOT=s3://$S3_BUCKET/runs/gpt2-medium/baseline2 \
+            "$REPO_DIR/slurm/train-multi-node.sbatch")
+        echo "Auto-submitted baseline2 training job $BASELINE2_JOB"
+    fi
+
+    # If this was baseline2, auto-run commercial report
+    if [ "${S3_RUN_KEY:-}" = "runs/gpt2-medium/baseline2" ]; then
+        REPO_DIR="$HOME/ai-factory-control-plane"
+        source /opt/pytorch/bin/activate
+        cd "$REPO_DIR"
+        python training/commercial_report.py \
+            --run-root "s3://$S3_BUCKET/runs/gpt2-medium/recovery2" \
+            --baseline-run-root "s3://$S3_BUCKET/runs/gpt2-medium/baseline2" \
+            --instance-type g5.xlarge \
+            --gpus-per-node 1 \
+            --run-name recovery2-vs-baseline2 \
+            --output "commercial-summary.md" \
+            --json-output "commercial-summary.json" 2>&1 || true
+        aws s3 cp commercial-summary.md "s3://$S3_BUCKET/runs/gpt2-medium/commercial-summary.md" 2>/dev/null || true
+        aws s3 cp commercial-summary.json "s3://$S3_BUCKET/runs/gpt2-medium/commercial-summary.json" 2>/dev/null || true
+        echo "Commercial report generated → s3://$S3_BUCKET/runs/gpt2-medium/commercial-summary.md"
+    fi
 else
     echo "FAIL — checkpoint step $LATEST_STEP rejected"
 fi
