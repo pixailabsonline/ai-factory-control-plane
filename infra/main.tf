@@ -372,7 +372,10 @@ resource "aws_instance" "training" {
     bootstrap_bucket = aws_s3_bucket.checkpoints.bucket
     region           = var.region
   })
-  placement_group = var.multi_node ? aws_placement_group.training[0].id : null
+  # Placement group disabled — cluster strategy pins both nodes to the same
+  # physical rack, causing correlated hardware failures. NCCL gain on 2x g5.xlarge
+  # over TCP is marginal; reliability matters more at this scale.
+  # placement_group = var.multi_node ? aws_placement_group.training[0].id : null
 
   root_block_device {
     volume_size = var.volume_size
