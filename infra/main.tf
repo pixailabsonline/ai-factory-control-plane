@@ -167,6 +167,11 @@ resource "aws_iam_role_policy" "training_cloudwatch" {
   })
 }
 
+resource "aws_iam_role_policy_attachment" "training_ssm" {
+  role       = aws_iam_role.training.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 resource "aws_iam_instance_profile" "training" {
   name = "ai-factory-training"
   role = aws_iam_role.training.name
