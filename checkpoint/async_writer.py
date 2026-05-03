@@ -290,30 +290,44 @@ class AsyncCheckpointWriter:
             print(f"[checkpoint] S3 sync failed for step {step}: {e}")
 
     def _sync_rank_to_s3(self, checkpoint_dir, step, rank):
-        """Each rank uploads only its own files — avoids cross-rank I/O for sharded saves."""
+        """Each rank uploads its own DCP shard + optim shard. Rank 0 also uploads metadata."""
         try:
             import boto3
             s3 = boto3.client("s3")
             prefix = self._s3_prefix_value()
-            # Rank 0 owns: model/ (DCP writes all shards there), train_state.pt, meta.json
-            # Every rank owns: optim-rank-{rank}/
-            # We let rank 0 upload shared files; every rank uploads its own optim shard.
-            upload_dirs = [checkpoint_dir / f"optim-rank-{rank}"]
+
+            # DCP writes each rank's shard as model/__<rank>_0.distcp.
+            # Each rank uploads only its own shard file — not the whole model/ dir.
+            model_dir = checkpoint_dir / "model"
+            shard_pattern = f"__{rank}_"
+            files_to_upload = []
+
+            if model_dir.exists():
+                for f in model_dir.iterdir():
+                    if f.is_file() and shard_pattern in f.name:
+                        files_to_upload.append(f)
+
+            # Rank 0 owns the shared files: .metadata, train_state.pt, meta.json
             if rank == 0:
-                upload_dirs += [
-                    checkpoint_dir / "model",
-                    checkpoint_dir,  # train_state.pt and meta.json at root
-                ]
-            for base in upload_dirs:
-                if not base.exists():
-                    continue
-                for file_path in (base.rglob("*") if base.is_dir() else [base]):
-                    if not file_path.is_file():
-                        continue
-                    rel = file_path.relative_to(checkpoint_dir)
-                    s3_key = f"{prefix}/checkpoint-{step}/{rel}"
-                    s3.upload_file(str(file_path), self.s3_bucket, s3_key)
-            print(f"[checkpoint] rank {rank} S3 sync done for step {step}")
+                meta_file = model_dir / ".metadata"
+                if meta_file.exists():
+                    files_to_upload.append(meta_file)
+                for fname in ("train_state.pt", "meta.json"):
+                    p = checkpoint_dir / fname
+                    if p.exists():
+                        files_to_upload.append(p)
+
+            # Every rank uploads its own optimizer shard
+            optim_dir = checkpoint_dir / f"optim-rank-{rank}"
+            if optim_dir.exists():
+                files_to_upload.extend(f for f in optim_dir.rglob("*") if f.is_file())
+
+            for file_path in files_to_upload:
+                rel = file_path.relative_to(checkpoint_dir)
+                s3_key = f"{prefix}/checkpoint-{step}/{rel}"
+                s3.upload_file(str(file_path), self.s3_bucket, s3_key)
+
+            print(f"[checkpoint] rank {rank} S3 sync done for step {step} ({len(files_to_upload)} files)")
         except Exception as e:
             print(f"[checkpoint] rank {rank} S3 sync failed for step {step}: {e}")
 
