@@ -81,11 +81,19 @@ def tokenize_and_pack(
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     tokenizer_version = getattr(tokenizer, "vocab_size", "unknown")
 
-    all_tokens: list[int] = []
-    record_count = 0
+    output_bin = output_dir / "packed.bin"
+    output_jsonl = output_dir / "packed.jsonl"
 
-    with open(input_path) as f:
-        for line in f:
+    record_count = 0
+    total_tokens = 0
+    sequence_count = 0
+    current: list[int] = []
+
+    # Stream through JSONL — never accumulate all tokens in memory
+    with open(input_path) as fin, \
+         open(output_bin, "wb") as fbin, \
+         open(output_jsonl, "w") as fjsonl:
+        for line in fin:
             line = line.strip()
             if not line:
                 continue
@@ -94,23 +102,17 @@ def tokenize_and_pack(
             if not text:
                 continue
             ids = tokenizer.encode(text, add_special_tokens=False)
-            all_tokens.extend(ids)
+            total_tokens += len(ids)
             record_count += 1
-
-    total_tokens = len(all_tokens)
-    sequences = pack_sequences(all_tokens, max_length)
-
-    # Write packed sequences as binary (int32 little-endian) — standard format for training loaders
-    output_bin = output_dir / "packed.bin"
-    with open(output_bin, "wb") as f:
-        for seq in sequences:
-            f.write(struct.pack(f"<{len(seq)}i", *seq))
-
-    # Also write as JSONL for human inspection
-    output_jsonl = output_dir / "packed.jsonl"
-    with open(output_jsonl, "w") as f:
-        for seq in sequences:
-            f.write(json.dumps({"tokens": seq}) + "\n")
+            current.extend(ids)
+            # flush complete sequences as we go
+            while len(current) >= max_length:
+                seq = current[:max_length]
+                current = current[max_length:]
+                fbin.write(struct.pack(f"<{max_length}i", *seq))
+                fjsonl.write(json.dumps({"tokens": seq}) + "\n")
+                sequence_count += 1
+        # drop the final incomplete sequence — keeps output deterministic
 
     return {
         "tokenizer_name": tokenizer_name,
@@ -119,9 +121,9 @@ def tokenize_and_pack(
         "packing_strategy": "greedy_fill",
         "input_records": record_count,
         "total_tokens": total_tokens,
-        "sequence_count": len(sequences),
-        "tokens_packed": len(sequences) * max_length,
-        "pack_efficiency": round(len(sequences) * max_length / total_tokens, 4) if total_tokens else 0.0,
+        "sequence_count": sequence_count,
+        "tokens_packed": sequence_count * max_length,
+        "pack_efficiency": round(sequence_count * max_length / total_tokens, 4) if total_tokens else 0.0,
         "output_bin": str(output_bin),
         "output_jsonl": str(output_jsonl),
         "bin_checksum_sha256": sha256_file(output_bin),
