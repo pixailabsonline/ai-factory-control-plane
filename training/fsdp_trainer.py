@@ -341,6 +341,15 @@ def train(args):
         print(f"\nTraining complete. {global_step} steps, {tokens_processed:,} tokens in {elapsed:.0f}s")
         print(f"Throughput: {tokens_processed / elapsed:.0f} tokens/sec")
 
+        if args.s3_bucket and args.s3_prefix:
+            try:
+                import boto3
+                s3_key = f"{args.s3_prefix.strip('/')}/training_metrics.json"
+                boto3.client("s3").upload_file(str(metrics_path), args.s3_bucket, s3_key)
+                print(f"training_metrics.json → s3://{args.s3_bucket}/{s3_key}")
+            except Exception as e:
+                print(f"[warn] training_metrics.json S3 upload failed: {e}")
+
     # Final checkpoint
     ckpt_writer.save(model, optimizer, scheduler, global_step, rank=rank, model_name=args.model)
     ckpt_writer.wait()
