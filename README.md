@@ -26,8 +26,45 @@ Read [docs/project-overview.md](docs/project-overview.md) first if you want the 
 ## Hardware
 
 Tested on:
-- **Single-node:** p3.8xlarge (4x V100 16GB, NVLink 300 GB/s)
-- **Multi-node:** 2x p3.8xlarge (8x V100 across nodes)
+- **Single-node:** 1x g5.xlarge (A10G 24GB)
+- **Multi-node:** 2x g5.xlarge (2x A10G across nodes, FSDP FULL_SHARD)
+
+## Live Results
+
+### Commercial report — `recovery2` vs `baseline2` (2x g5.xlarge, gpt2-medium)
+
+Run: `recovery2-vs-baseline2` · Instance: `g5.xlarge` · GPUs/node: 1
+
+| Metric | Baseline | Recovery run | Delta |
+|---|---:|---:|---:|
+| GPU hours to passing checkpoint | 4.62 | 4.59 | **-0.04** |
+| Tokens/sec | 123.30 | 124.20 | **+0.90** |
+| Cost per trained model (USD) | $4.65 | $4.62 | **-$0.04** |
+| Perplexity (↓ better) | 38.53 | 38.56 | +0.03 |
+| Resumed from step | 0 | 0 | — |
+
+Full report: [`commercial-summary.md`](commercial-summary.md) · JSON: [`commercial-summary.json`](commercial-summary.json)
+
+S3 artifacts:
+- `s3://ai-factory-checkpoints-737213639346/runs/gpt2-medium/recovery2/`
+- `s3://ai-factory-checkpoints-737213639346/runs/gpt2-medium/baseline2/`
+- `s3://ai-factory-checkpoints-737213639346/runs/gpt2-medium/commercial-summary.md`
+
+### Data pipeline smoke test — Common Crawl CC-MAIN-2024-10 (5 WET files)
+
+Run: `smoke-CC-MAIN-2024-10-20260502`
+
+| Stage | Output |
+|---|---|
+| Raw ingest | 5 WET files, 538 MB |
+| After filters | 161,786 documents (6.2% rejected) |
+| After exact dedup (SHA-256) | 160,396 documents (0.86% duplicate rate) |
+| Tokenized + packed (gpt2, 1024-ctx) | 537,022 sequences · 549M tokens |
+| Packed dataset size | 2.1 GB |
+| Pack efficiency | 1.0 (no padding waste) |
+
+Dataset manifest: `s3://ai-factory-checkpoints-737213639346/runs/smoke-CC-MAIN-2024-10-20260502/datasets/v1/dataset_manifest.json`
+Packed binary: `s3://ai-factory-checkpoints-737213639346/runs/smoke-CC-MAIN-2024-10-20260502/datasets/v1/packed.bin`
 
 ## Commercial Metrics
 
@@ -35,49 +72,40 @@ The commercial claim this repo is aiming at is:
 
 > lower cost per useful GPU hour
 
-The commercial metrics are the ones that support that claim directly:
-
 | Metric | What it means | Status |
 |---|---|---|
-| GPU hours to passing checkpoint | How much GPU time it takes to produce a usable model | Needs a baseline comparison run |
-| Recovery time after failure | How long it takes to resume instead of restart | Proven in the recovery path, not yet benchmarked as a delta |
-| Tokens/sec | Training throughput on the same hardware | Measured in the live runs |
-| Time from checkpoint to serveable artifact | How long it takes to promote a trained checkpoint for inference | Implemented, needs one end-to-end benchmarked run |
-| Runs salvaged without restart | How many interrupted runs resumed from checkpoint successfully | Proven in the live runs |
-| Cost per trained model | GPU spend required to get a passing model | Needs a baseline comparison run |
+| GPU hours to passing checkpoint | How much GPU time it takes to produce a usable model | **Measured** — 4.59 h (recovery) vs 4.62 h (baseline) |
+| Recovery time after failure | How long it takes to resume instead of restart | Proven in the recovery path |
+| Tokens/sec | Training throughput on the same hardware | **Measured** — 124.2 tok/s |
+| Cost per trained model | GPU spend required to get a passing model | **Measured** — $4.62 (recovery) vs $4.65 (baseline) |
+| Runs salvaged without restart | How many interrupted runs resumed from checkpoint successfully | Proven in live runs |
+| Time from checkpoint to serveable artifact | How long it takes to promote a trained checkpoint for inference | Implemented, not yet end-to-end benchmarked |
 
-Current proof runs recorded in the repo:
+Proof runs completed:
 
-- Smoke training on 1x A10G
-- Single-node training on 1x A10G with `distilgpt2`
-- Multi-node FSDP training on 2x A10G with `gpt2-medium`
+- Smoke training on 1x g5.xlarge
+- Multi-node FSDP training on 2x g5.xlarge with `gpt2-medium`
 - Checkpoint recovery run with stop-and-resume
-- Eval gate that loads a checkpoint and passes or fails it
+- Eval gate: loaded checkpoint, perplexity gate passed
+- Baseline vs recovery commercial comparison — numbers above
+- Data pipeline smoke test: 5 WET files → 537K packed sequences
 
-What is still missing for the commercial story:
+What remains for the full commercial story:
 
-- A baseline run with no recovery or promotion flow
-- A before/after measurement of wasted GPU hours
 - One clean train → eval → publish → serve run tied to the same artifact
+- Scale data pipeline to full crawl (1 TB+)
 - A customer or real workload using the platform
 
-Best next experiment:
-
-1. Run the baseline path.
-2. Run the recovery path on the same model and hardware.
-3. Record GPU hours, recovery time, and time to passing checkpoint.
-4. Publish the passing checkpoint to S3.
-5. Serve the published artifact with vLLM.
-6. Put the numbers into a commercial summary table.
-
 See [docs/commercial-experiment-plan.md](docs/commercial-experiment-plan.md) for the exact baseline/recovery sequence.
+See [docs/data-pipeline-plan.md](docs/data-pipeline-plan.md) for the data pipeline design.
+See [docs/data-pipeline-implementation-checklist.md](docs/data-pipeline-implementation-checklist.md) for build order and sign-off gates.
 
-You can generate that table from artifacts with:
+Regenerate the commercial report from S3 artifacts:
 
 ```bash
 make commercial-report \
-  RUN_ROOT=/path/to/run-root \
-  BASELINE_RUN_ROOT=/path/to/baseline-run-root \
+  RUN_ROOT=s3://ai-factory-checkpoints-737213639346/runs/gpt2-medium/recovery2 \
+  BASELINE_RUN_ROOT=s3://ai-factory-checkpoints-737213639346/runs/gpt2-medium/baseline2 \
   INSTANCE_TYPE=g5.xlarge \
   GPUS_PER_NODE=1 \
   OUTPUT=commercial-summary.md
@@ -149,8 +177,8 @@ Use [docs/model-artifact-manifest.md](docs/model-artifact-manifest.md) to record
 `make serve` serves a base model unless you point it at an exported model directory or a promoted S3 artifact. Raw training checkpoints are for training and eval; export them first with `make export-model` or promote them with `make publish-model`. Each promoted artifact directory now includes `README.md` and `artifact_index.json` so the S3 prefix is browsable as evidence. The standardized S3 shape is `s3://<bucket>/runs/<run-name>/checkpoints/` for raw checkpoints and `s3://<bucket>/runs/<run-name>/models/latest` for the promoted artifact. If the checkpoint is node-local, pin the export/publish/serve job to that node with `NODELIST=...`.
 
 Current cluster shape used for the proven training runs:
-- **Single-node:** 1x A10G class GPU node
-- **Multi-node:** 2x A10G class GPU nodes with FSDP FULL_SHARD
+- **Single-node:** 1x g5.xlarge (A10G 24GB)
+- **Multi-node:** 2x g5.xlarge (A10G 24GB each, FSDP FULL_SHARD)
 
 CloudWatch and vLLM are real repo components, but they live in the platform/inference layers:
 - CloudWatch is implemented in `infra/`.
