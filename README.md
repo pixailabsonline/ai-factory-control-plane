@@ -1,16 +1,35 @@
 # AI Factory Control Plane
 
-A platform that takes raw web data and turns it into a trained, evaluated, production-ready model — automatically. You push data in one end, a serveable model comes out the other. The system handles GPU provisioning, distributed training, checkpoint recovery, quality gates, and model promotion without manual intervention.
+Infrastructure for training language models at scale — from raw data to production-ready model, fully automated.
 
-**What it does in plain English:** you give it text data (e.g. Common Crawl), it cleans and tokenizes that data, trains a language model across multiple GPUs, automatically recovers if hardware fails mid-training, evaluates the result, and publishes the passing model ready to serve.
+## The problem
 
-## How it works
+Training a model sounds simple: get GPUs, run PyTorch. In practice at scale it's an engineering nightmare:
 
-1. **Data pipeline** — ingests raw text (Common Crawl), filters junk, deduplicates, tokenizes, and packs into fixed-length training sequences
-2. **Distributed training** — runs PyTorch FSDP across multiple GPU nodes, with async checkpointing to S3
-3. **Fault recovery** — if a node dies mid-training, the job resumes from the last checkpoint instead of starting over
-4. **Eval gate** — loads the trained checkpoint, measures perplexity, passes or fails it
-5. **Model promotion** — passing models get exported and served via vLLM
+- **GPU failures are constant.** At 100+ GPUs, hardware faults happen every few hours. A 3-day training run that can't recover from interruptions will never finish. You need distributed checkpointing that saves state across all nodes asynchronously, and a scheduler that restarts the job from exactly where it left off.
+- **Data quality is invisible until training is wasted.** Feeding raw web text into a model produces garbage. You need deduplication, filtering, and deterministic tokenization — and you need to track provenance so a bad training run can be traced back to bad data.
+- **Multi-node GPU training is not "just add more GPUs."** Sharding a model across nodes requires NCCL configuration, placement decisions, mixed-precision policies, and gradient accumulation tuning. A misconfiguration silently produces a worse model or OOMs after hours.
+- **Most GPU spend is wasted.** Without automated quality gates, teams burn thousands of dollars on training runs that produce models too bad to serve. Without cost tracking per run, there's no way to know if the platform is improving.
+
+These problems are why frontier labs employ dedicated infrastructure teams. This repo is that team in code.
+
+## What this solves
+
+A single system that handles the full loop: raw text in, evaluated model out. No manual steps between stages.
+
+1. **Data pipeline** — ingests raw text (Common Crawl), filters junk, deduplicates, tokenizes, packs into training-ready sequences. Deterministic and reproducible.
+2. **Distributed training** — PyTorch FSDP across multiple GPU nodes, async checkpoint to S3. Handles mixed precision, gradient accumulation, sharding strategy.
+3. **Fault recovery** — node dies mid-training, job resumes from last checkpoint. No wasted compute. Proven across real hardware failures.
+4. **Eval gate** — perplexity check on the trained checkpoint. Pass = promote. Fail = reject. No human in the loop.
+5. **Model promotion** — passing models exported and served via vLLM with continuous batching.
+
+## Who needs this
+
+- **AI labs** that want to train custom models without building infra from scratch
+- **Enterprises** fine-tuning models on proprietary data who can't afford to waste GPU hours
+- **Research teams** that need reproducible training pipelines with provenance tracking
+
+The alternative is stitching together 8+ tools (SageMaker, Weights & Biases, custom scripts, manual checkpoint management) or paying $50k+/month for managed platforms like Anyscale or MosaicML.
 
 ## Stack
 
