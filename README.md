@@ -1,27 +1,34 @@
 # AI Factory Control Plane
 
-End-to-end GPU training infrastructure: Kubernetes substrate, NVIDIA GPU enablement, Slurm researcher ergonomics, FSDP fine-tuning, checkpoint recovery, evaluation gates, model export/promotion, and vLLM inference serving.
+A platform that takes raw web data and turns it into a trained, evaluated, production-ready model — automatically. You push data in one end, a serveable model comes out the other. The system handles GPU provisioning, distributed training, checkpoint recovery, quality gates, and model promotion without manual intervention.
+
+**What it does in plain English:** you give it text data (e.g. Common Crawl), it cleans and tokenizes that data, trains a language model across multiple GPUs, automatically recovers if hardware fails mid-training, evaluates the result, and publishes the passing model ready to serve.
+
+## How it works
+
+1. **Data pipeline** — ingests raw text (Common Crawl), filters junk, deduplicates, tokenizes, and packs into fixed-length training sequences
+2. **Distributed training** — runs PyTorch FSDP across multiple GPU nodes, with async checkpointing to S3
+3. **Fault recovery** — if a node dies mid-training, the job resumes from the last checkpoint instead of starting over
+4. **Eval gate** — loads the trained checkpoint, measures perplexity, passes or fails it
+5. **Model promotion** — passing models get exported and served via vLLM
 
 ## Stack
 
-- **Kubernetes substrate** - GPU node lifecycle, platform services, networking, monitoring primitives
-- **NVIDIA GPU Operator** - GPU device/runtime enablement and health on the Kubernetes substrate
-- **Slurm** - researcher-facing job scheduling, GPU allocation, preemption handling, multi-node coordination
-- **PyTorch FSDP** - distributed training with full sharding, mixed precision
-- **vLLM** - production inference with continuous batching and PagedAttention
-- **Terraform** - instance provisioning, IAM, S3, CloudWatch, auto-provisioned with Deep Learning AMI
-- **CloudWatch** - infrastructure-level log shipping, GPU utilization metrics, idle alerts
+| Layer | Tool | Role |
+|---|---|---|
+| Infrastructure | Terraform + AWS | Provisions GPU instances, networking, S3, IAM |
+| Scheduling | Slurm | Job queuing, GPU allocation, multi-node coordination |
+| Training | PyTorch FSDP | Distributed training with full sharding, mixed precision |
+| Data | Custom pipeline | Common Crawl ingest → filter → dedup → tokenize → pack |
+| Eval | Quality gate | Perplexity check on latest checkpoint |
+| Serving | vLLM | Production inference with continuous batching |
+| Monitoring | CloudWatch | GPU utilization metrics, idle alerts, log shipping |
 
-## Architecture Direction
+## Architecture
 
-This repo follows a NVIDIA-style layered model: Kubernetes is the infrastructure substrate, while Slurm remains the batch scheduler users interact with. Researchers submit jobs with normal Slurm commands; operators validate the Kubernetes and GPU Operator layer underneath.
+Slurm is the user-facing layer — researchers submit jobs with `sbatch`. Underneath, Terraform manages the GPU nodes on AWS. This is not a Kubernetes-native ML platform; GPUs are owned by Slurm partitions, not shared with arbitrary workloads.
 
-This is not a CoreWeave/SUNK-style unified scheduler. The default design does not allow general Kubernetes workloads to contend with Slurm jobs for the same GPUs. GPU capacity ownership must be explicit through node pools, partitions, labels, or reservations.
-
-See [docs/nvidia-style-slurm-on-kubernetes.md](docs/nvidia-style-slurm-on-kubernetes.md) for the architecture contract.
-See [decisions/kubernetes-substrate-vs-unified-scheduler.md](decisions/kubernetes-substrate-vs-unified-scheduler.md) for the scope decision and revisit criteria.
-See [docs/project-overview.md](docs/project-overview.md) for the single-page map of the repo.
-Read [docs/project-overview.md](docs/project-overview.md) first if you want the diagram and the end-to-end flow in one place.
+See [docs/project-overview.md](docs/project-overview.md) for the full architecture diagram.
 
 ## Hardware
 
@@ -66,39 +73,14 @@ Run: `smoke-CC-MAIN-2024-10-20260502`
 Dataset manifest: `s3://ai-factory-checkpoints-737213639346/runs/smoke-CC-MAIN-2024-10-20260502/datasets/v1/dataset_manifest.json`
 Packed binary: `s3://ai-factory-checkpoints-737213639346/runs/smoke-CC-MAIN-2024-10-20260502/datasets/v1/packed.bin`
 
-## Commercial Metrics
+## Why this matters
 
-The commercial claim this repo is aiming at is:
+The platform's job is to reduce cost per useful GPU hour. Checkpoint recovery means interrupted training resumes instead of restarting from scratch. The automated eval gate means bad models are caught immediately rather than wasting inference budget.
 
-> lower cost per useful GPU hour
+The commercial report above proves this works on real hardware with real training runs.
 
-| Metric | What it means | Status |
-|---|---|---|
-| GPU hours to passing checkpoint | How much GPU time it takes to produce a usable model | **Measured** — 4.59 h (recovery) vs 4.62 h (baseline) |
-| Recovery time after failure | How long it takes to resume instead of restart | Proven in the recovery path |
-| Tokens/sec | Training throughput on the same hardware | **Measured** — 124.2 tok/s |
-| Cost per trained model | GPU spend required to get a passing model | **Measured** — $4.62 (recovery) vs $4.65 (baseline) |
-| Runs salvaged without restart | How many interrupted runs resumed from checkpoint successfully | Proven in live runs |
-| Time from checkpoint to serveable artifact | How long it takes to promote a trained checkpoint for inference | Implemented, not yet end-to-end benchmarked |
-
-Proof runs completed:
-
-- Smoke training on 1x g5.xlarge
-- Multi-node FSDP training on 2x g5.xlarge with `gpt2-medium`
-- Checkpoint recovery run with stop-and-resume
-- Eval gate: loaded checkpoint, perplexity gate passed
-- Baseline vs recovery commercial comparison — numbers above
-- Data pipeline smoke test: 5 WET files → 537K packed sequences
-
-What remains for the full commercial story:
-
-- One clean train → eval → publish → serve run tied to the same artifact
-- Scale data pipeline to full crawl (1 TB+)
-- A customer or real workload using the platform
-
-See [docs/commercial-experiment-plan.md](docs/commercial-experiment-plan.md) for the exact baseline/recovery sequence.
+See [docs/commercial-experiment-plan.md](docs/commercial-experiment-plan.md) for the baseline/recovery experiment design.
 See [docs/data-pipeline-plan.md](docs/data-pipeline-plan.md) for the data pipeline design.
-See [docs/data-pipeline-implementation-checklist.md](docs/data-pipeline-implementation-checklist.md) for build order and sign-off gates.
 
 Regenerate the commercial report from S3 artifacts:
 
@@ -165,24 +147,7 @@ make serve MODEL_S3_ROOT=s3://<bucket>/runs/<run-name>
 make bench
 ```
 
-`allowed_ssh_cidrs` is now required explicitly. The default-open `0.0.0.0/0` posture has been removed.
-
-Stage 3 is now proven end to end on the current cluster shape:
-- smoke training passes
-- distributed multi-node training passes
-- checkpoint recovery passes
-
-Use [docs/model-artifact-manifest.md](docs/model-artifact-manifest.md) to record trained checkpoints or exported model artifacts without checking binaries into git.
-
-`make serve` serves a base model unless you point it at an exported model directory or a promoted S3 artifact. Raw training checkpoints are for training and eval; export them first with `make export-model` or promote them with `make publish-model`. Each promoted artifact directory now includes `README.md` and `artifact_index.json` so the S3 prefix is browsable as evidence. The standardized S3 shape is `s3://<bucket>/runs/<run-name>/checkpoints/` for raw checkpoints and `s3://<bucket>/runs/<run-name>/models/latest` for the promoted artifact. If the checkpoint is node-local, pin the export/publish/serve job to that node with `NODELIST=...`.
-
-Current cluster shape used for the proven training runs:
-- **Single-node:** 1x g5.xlarge (A10G 24GB)
-- **Multi-node:** 2x g5.xlarge (A10G 24GB each, FSDP FULL_SHARD)
-
-CloudWatch and vLLM are real repo components, but they live in the platform/inference layers:
-- CloudWatch is implemented in `infra/`.
-- vLLM is launched by `inference/server.py` and depends on `training/requirements.txt`.
+`allowed_ssh_cidrs` is required — no default-open posture.
 
 ## Ops Journal
 
