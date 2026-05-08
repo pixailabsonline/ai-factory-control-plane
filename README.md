@@ -1,35 +1,24 @@
 # AI Factory Control Plane
 
-Infrastructure for training language models at scale — from raw data to production-ready model, fully automated.
+Automated model training platform. Raw text goes in, a trained and evaluated model comes out — data pipeline, distributed training, fault recovery, quality gates, and serving handled end-to-end.
 
-## The problem
+## Why this is hard
 
-Training a model sounds simple: get GPUs, run PyTorch. In practice at scale it's an engineering nightmare:
+At scale, GPU training has three expensive failure modes:
 
-- **GPU failures are constant.** At 100+ GPUs, hardware faults happen every few hours. A 3-day training run that can't recover from interruptions will never finish. You need distributed checkpointing that saves state across all nodes asynchronously, and a scheduler that restarts the job from exactly where it left off.
-- **Data quality is invisible until training is wasted.** Feeding raw web text into a model produces garbage. You need deduplication, filtering, and deterministic tokenization — and you need to track provenance so a bad training run can be traced back to bad data.
-- **Multi-node GPU training is not "just add more GPUs."** Sharding a model across nodes requires NCCL configuration, placement decisions, mixed-precision policies, and gradient accumulation tuning. A misconfiguration silently produces a worse model or OOMs after hours.
-- **Most GPU spend is wasted.** Without automated quality gates, teams burn thousands of dollars on training runs that produce models too bad to serve. Without cost tracking per run, there's no way to know if the platform is improving.
+1. **Hardware fails mid-run.** Multi-day training jobs that can't checkpoint and resume are thrown away entirely when a node goes down. At 100+ GPUs this happens regularly.
+2. **Bad data silently wastes compute.** Without filtering, dedup, and provenance tracking, you burn GPU hours training on garbage and can't trace why.
+3. **No quality gate = no accountability.** Teams ship models without automated eval, discover they're unusable in production, and repeat.
 
-These problems are why frontier labs employ dedicated infrastructure teams. This repo is that team in code.
+This repo automates the full loop so none of these require human intervention:
 
-## What this solves
+**Data pipeline** → **Distributed training (FSDP)** → **Checkpoint recovery** → **Eval gate** → **Model promotion + serving**
 
-A single system that handles the full loop: raw text in, evaluated model out. No manual steps between stages.
+## Who this is for
 
-1. **Data pipeline** — ingests raw text (Common Crawl), filters junk, deduplicates, tokenizes, packs into training-ready sequences. Deterministic and reproducible.
-2. **Distributed training** — PyTorch FSDP across multiple GPU nodes, async checkpoint to S3. Handles mixed precision, gradient accumulation, sharding strategy.
-3. **Fault recovery** — node dies mid-training, job resumes from last checkpoint. No wasted compute. Proven across real hardware failures.
-4. **Eval gate** — perplexity check on the trained checkpoint. Pass = promote. Fail = reject. No human in the loop.
-5. **Model promotion** — passing models exported and served via vLLM with continuous batching.
-
-## Who needs this
-
-- **AI labs** that want to train custom models without building infra from scratch
-- **Enterprises** fine-tuning models on proprietary data who can't afford to waste GPU hours
-- **Research teams** that need reproducible training pipelines with provenance tracking
-
-The alternative is stitching together 8+ tools (SageMaker, Weights & Biases, custom scripts, manual checkpoint management) or paying $50k+/month for managed platforms like Anyscale or MosaicML.
+- AI labs training custom models without a dedicated infra team
+- Enterprises fine-tuning on proprietary data who can't afford wasted GPU hours
+- Research teams that need reproducible, traceable training pipelines
 
 ## Stack
 
